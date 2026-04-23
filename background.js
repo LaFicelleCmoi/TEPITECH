@@ -291,6 +291,40 @@ async function translateBatch(texts, from, to) {
 }
 
 /* =========================================================
+   Offscreen document — hôte de Whisper STT
+   ========================================================= */
+let offscreenCreating = null;
+async function ensureOffscreen() {
+  const url = chrome.runtime.getURL('offscreen/offscreen.html');
+  try {
+    const ctxs = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
+    if (ctxs.some(c => c.documentUrl === url)) return;
+  } catch {}
+  if (offscreenCreating) { await offscreenCreating; return; }
+  offscreenCreating = chrome.offscreen.createDocument({
+    url,
+    reasons: ['WORKERS'],
+    justification: 'Run Whisper WASM for tab audio transcription (no microphone).',
+  }).catch((err) => {
+    // Déjà créé en parallèle : ignore
+    if (!/Only a single offscreen/.test(err?.message || '')) throw err;
+  }).finally(() => { offscreenCreating = null; });
+  await offscreenCreating;
+}
+
+// Relaie la progression Whisper aux content scripts actifs
+chrome.runtime.onMessage.addListener((msg) => {
+  if (!msg || !msg.type) return;
+  if (msg.type === 'WHISPER_PROGRESS' || msg.type === 'WHISPER_READY' || msg.type === 'WHISPER_OFFSCREEN_LOADED') {
+    chrome.tabs.query({}, (tabs) => {
+      for (const t of tabs || []) {
+        if (t.id) chrome.tabs.sendMessage(t.id, msg).catch(() => {});
+      }
+    });
+  }
+});
+
+/* =========================================================
    Messages
    ========================================================= */
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -323,6 +357,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       chrome.tts.speak(msg.text || '', { lang: msg.lang || 'fr-FR', rate: 1.0 });
     } catch (err) { console.warn('TU: tts error', err); }
     return;
+  }
+
+  if (msg.type === 'TRANSCRIBE_PCM') {
+    (async () => {
+      try {
+        await ensureOffscreen();
+        const result = await chrome.runtime.sendMessage({
+          type: 'OFFSCREEN_TRANSCRIBE',
+          pcm: msg.pcm,
+          sampleRate: msg.sampleRate || 16000,
+        });
+        sendResponse(result || { ok: false, error: 'pas de réponse offscreen' });
+      } catch (err) {
+        sendResponse({ ok: false, error: err?.message || String(err) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === 'WHISPER_WARMUP') {
+    (async () => {
+      try {
+        await ensureOffscreen();
+        const result = await chrome.runtime.sendMessage({ type: 'OFFSCREEN_WARMUP' });
+        sendResponse(result || { ok: false });
+      } catch (err) {
+        sendResponse({ ok: false, error: err?.message || String(err) });
+      }
+    })();
+    return true;
   }
 
   if (msg.type === 'GET_TAB_STREAM_ID') {

@@ -868,11 +868,11 @@
         <div class="tu-help" hidden>
           <div class="tu-help-title">🎯 Capture audio de l'onglet</div>
           <ul>
-            <li><b>Aucun micro utilisé</b> — seul l'audio produit par l'onglet est capté (<code>chrome.tabCapture</code>).</li>
-            <li>L'audio reste audible normalement (casque ou enceintes).</li>
-            <li>Le boost amplifie jusqu'à ×3 si le son est faible.</li>
-            <li>Le VU-mètre confirme que l'audio est bien capturé.</li>
-            <li><i>Transcription locale (Whisper WASM) : option à activer dans une prochaine version.</i></li>
+            <li><b>Aucun micro utilisé</b> — seul l'audio de l'onglet est capté (<code>chrome.tabCapture</code>).</li>
+            <li>Transcription locale via <b>Whisper WASM</b> (1<sup>er</sup> lancement = téléchargement modèle ~40 Mo, cache ensuite).</li>
+            <li>Le modèle tourne dans un <b>offscreen document</b> — pas de réseau après le 1<sup>er</sup> load, tout reste privé.</li>
+            <li>Boost jusqu'à ×3 pour les pistes faibles.</li>
+            <li>Latence : ~5 s par fenêtre (chunks de 5 s).</li>
           </ul>
         </div>
 
@@ -1090,6 +1090,34 @@
     };
   }
 
+  /* Resample Float32Array PCM → 16 kHz mono (format Whisper) */
+  async function resampleTo16kMono(pcm, sourceRate) {
+    if (sourceRate === 16000) return pcm;
+    const targetLength = Math.ceil(pcm.length * 16000 / sourceRate);
+    const OfflineCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (!OfflineCtx) {
+      // Fallback linéaire
+      const out = new Float32Array(targetLength);
+      const ratio = sourceRate / 16000;
+      for (let i = 0; i < targetLength; i++) {
+        const src = i * ratio;
+        const j = Math.floor(src);
+        const t = src - j;
+        out[i] = (pcm[j] || 0) * (1 - t) + (pcm[j + 1] || 0) * t;
+      }
+      return out;
+    }
+    const offline = new OfflineCtx(1, targetLength, 16000);
+    const buf = offline.createBuffer(1, pcm.length, sourceRate);
+    buf.copyToChannel(pcm, 0);
+    const srcNode = offline.createBufferSource();
+    srcNode.buffer = buf;
+    srcNode.connect(offline.destination);
+    srcNode.start(0);
+    const rendered = await offline.startRendering();
+    return rendered.getChannelData(0);
+  }
+
   /* =========================================================
      SubtitleEngine — capture AUDIO de l'onglet (priorité)
      - PRIORITÉ : capture directe de l'audio de l'onglet via chrome.tabCapture
@@ -1117,6 +1145,13 @@
       this.tabGain   = null;
       this.tabAnalyser = null;
       this.levelRAF  = null;
+
+      // PCM / Whisper
+      this.scriptProc    = null;
+      this.pcmBuffers    = [];
+      this.pcmCollected  = 0;
+      this.transcribing  = false;
+      this.pendingPcm    = null;
     }
 
     async start() {
@@ -1126,8 +1161,8 @@
         const ok = await this.try_tab();
         if (ok) {
           setSourceLabel('tab');
-          setOrig('🎧 Audio de l\u2019onglet capturé — lance un audio/une vidéo sur la page.', 'auto');
-          setTrad('(transcription non dispo sans STT local — à venir)', state.langTo);
+          setOrig('🎧 Audio de l\u2019onglet — lance une piste. Transcription Whisper en cours de chargement…', 'en');
+          setTrad('…', state.langTo);
         } else {
           setSourceLabel('—');
           setStatus('❌ capture de l\u2019onglet refusée');
@@ -1150,6 +1185,11 @@
       this.detachers.forEach(fn => { try { fn(); } catch {} });
       this.detachers = [];
       if (this.levelRAF) { cancelAnimationFrame(this.levelRAF); this.levelRAF = null; }
+      if (this.scriptProc) {
+        try { this.scriptProc.disconnect(); } catch {}
+        this.scriptProc.onaudioprocess = null;
+        this.scriptProc = null;
+      }
       if (this.tabStream) {
         try { this.tabStream.getTracks().forEach(t => t.stop()); } catch {}
         this.tabStream = null;
@@ -1159,6 +1199,7 @@
         this.audioCtx = null;
       }
       this.tabGain = null; this.tabAnalyser = null;
+      this.pcmBuffers = []; this.pcmCollected = 0;
     }
 
     cycleSource() {
@@ -1219,12 +1260,98 @@
         this.tabAnalyser = analyser;
 
         this.startLevelMeter();
-        setStatus('🎧 audio onglet capturé — amplification active');
+        this.startPcmCollector(ctx, src);
+        // Warm-up Whisper en tâche de fond (charge le modèle dès que possible)
+        sendBG({ type: 'WHISPER_WARMUP' }).catch(() => {});
+        setStatus('🎧 audio onglet capturé — amplification + transcription');
         return true;
       } catch (err) {
         console.warn('TU: tab capture failed', err);
         setStatus('capture onglet refusée/indisponible');
         return false;
+      }
+    }
+
+    /* --- Collecteur PCM pour Whisper ---
+       On branche un ScriptProcessorNode sur la source (chemin dupliqué, ne touche
+       pas à la destination audible) et on accumule des fenêtres de 5 s ; chaque
+       fenêtre est resamplée en 16 kHz mono puis envoyée à l'offscreen Whisper. */
+    startPcmCollector(ctx, source) {
+      const sp = ctx.createScriptProcessor(4096, 1, 1);
+      // Connect source → sp, puis sp → destination MUETTE (sinon Safari n'appelle pas onaudioprocess)
+      const silent = ctx.createGain();
+      silent.gain.value = 0;
+      source.connect(sp);
+      sp.connect(silent);
+      silent.connect(ctx.destination);
+
+      const CHUNK_SEC = 5;
+      const targetSamples = Math.round(ctx.sampleRate * CHUNK_SEC);
+
+      sp.onaudioprocess = (e) => {
+        if (this.paused) return;
+        const input = e.inputBuffer.getChannelData(0);
+        // Copie car le buffer sous-jacent est réutilisé
+        this.pcmBuffers.push(new Float32Array(input));
+        this.pcmCollected += input.length;
+        if (this.pcmCollected >= targetSamples) {
+          const combined = new Float32Array(this.pcmCollected);
+          let offset = 0;
+          for (const chunk of this.pcmBuffers) {
+            combined.set(chunk, offset);
+            offset += chunk.length;
+          }
+          this.pcmBuffers = [];
+          this.pcmCollected = 0;
+          this.dispatchTranscription(combined, ctx.sampleRate);
+        }
+      };
+      this.scriptProc = sp;
+    }
+
+    /* Ne fait qu'une transcription à la fois, buffer la plus récente sinon */
+    async dispatchTranscription(pcm, sampleRate) {
+      if (this.transcribing) {
+        // On remplace la pending pour toujours transcrire la plus récente
+        this.pendingPcm = { pcm, sampleRate };
+        return;
+      }
+      this.transcribing = true;
+      try {
+        await this.transcribeChunk(pcm, sampleRate);
+      } finally {
+        this.transcribing = false;
+        if (this.pendingPcm) {
+          const next = this.pendingPcm;
+          this.pendingPcm = null;
+          // Ne bloque pas le stack — relance en micro-tâche
+          Promise.resolve().then(() => this.dispatchTranscription(next.pcm, next.sampleRate));
+        }
+      }
+    }
+
+    async transcribeChunk(pcm, sampleRate) {
+      try {
+        const resampled = await resampleTo16kMono(pcm, sampleRate);
+        // Seuil d'énergie : on ne transcrit pas le silence
+        let sum = 0;
+        for (let i = 0; i < resampled.length; i++) sum += resampled[i] * resampled[i];
+        const rms = Math.sqrt(sum / resampled.length);
+        if (rms < 0.005) return; // silence
+
+        const res = await sendBG({
+          type: 'TRANSCRIBE_PCM',
+          pcm: resampled,
+          sampleRate: 16000,
+        });
+        if (res?.ok && res.text) {
+          this.handleCaption(res.text, 'en');
+        } else if (res && !res.ok && res.error) {
+          console.warn('TU: transcribe error', res.error);
+          setStatus('⚠️ ' + res.error);
+        }
+      } catch (err) {
+        console.warn('TU: transcribe failed', err);
       }
     }
 
@@ -1503,6 +1630,27 @@
       try { QCM_CACHE.clear(); QCM_MISS.clear(); } catch {}
       try { chrome.storage.local.remove(PERSIST_KEY); } catch {}
       toast('Cache vidé');
+      return;
+    }
+
+    if (msg.type === 'WHISPER_PROGRESS') {
+      if (!widget) return;
+      const s = msg.status || '';
+      if (s === 'download' || s === 'progress') {
+        const file = (msg.file || '').split('/').pop();
+        const pct = typeof msg.progress === 'number' ? Math.round(msg.progress) : null;
+        setStatus('📦 Whisper : ' + (file || 'chargement') + (pct != null ? ` (${pct}%)` : '…'));
+      } else if (s === 'done') {
+        setStatus('✅ modèle Whisper prêt');
+      } else if (s === 'ready') {
+        setStatus('🧠 Whisper initialisé');
+      } else if (s === 'initiate') {
+        setStatus('⏳ téléchargement modèle…');
+      }
+      return;
+    }
+    if (msg.type === 'WHISPER_READY') {
+      if (widget) setStatus('✅ Whisper prêt — transcription en direct');
       return;
     }
   });
