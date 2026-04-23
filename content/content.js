@@ -866,13 +866,13 @@
         <div class="tu-level"><div class="tu-level-bar"></div></div>
 
         <div class="tu-help" hidden>
-          <div class="tu-help-title">🎯 Conseils test d'anglais</div>
+          <div class="tu-help-title">🎯 Capture audio de l'onglet</div>
           <ul>
-            <li>Clique le widget, la capture démarre automatiquement sur l'audio de cet onglet (pas besoin d'activer les sous-titres).</li>
-            <li>La transcription utilise <b>l'entrée audio système</b> (micro par défaut).</li>
-            <li>🎧 <b>Casque / écouteurs</b> : active <b>Stereo Mix</b> (Windows) ou <b>Loopback/BlackHole</b> (Mac) comme entrée par défaut pour transcrire sans passer par le micro.</li>
-            <li>🔊 <b>Haut-parleurs</b> : monte le boost et laisse le micro intégré faire le travail.</li>
-            <li>Si ça ne capte pas, change la source avec 📡.</li>
+            <li><b>Aucun micro utilisé</b> — seul l'audio produit par l'onglet est capté (<code>chrome.tabCapture</code>).</li>
+            <li>L'audio reste audible normalement (casque ou enceintes).</li>
+            <li>Le boost amplifie jusqu'à ×3 si le son est faible.</li>
+            <li>Le VU-mètre confirme que l'audio est bien capturé.</li>
+            <li><i>Transcription locale (Whisper WASM) : option à activer dans une prochaine version.</i></li>
           </ul>
         </div>
 
@@ -1105,18 +1105,11 @@
       this.log = [];
       this.paused = false;
       this.lastText = '';
-      // Modes : 'auto' (tab + mic), 'tab', 'mic', 'video', 'youtube', 'netflix', 'vimeo', 'twitch', 'generic'
+      // Modes : 'auto' | 'tab' | sous-titres ('video' | 'youtube' | ...)
+      // PAS de mode micro — capture onglet uniquement.
       this.sourceMode = 'auto';
       this.detachers = [];
       this.detectedLang = state.langFrom !== 'auto' ? state.langFrom : 'en';
-
-      // Sentence coalescing
-      this.coalesceBuf = '';
-      this.coalesceTimer = null;
-      this.coalesceSrcLang = 'auto';
-
-      this.micRetries = 0;
-      this.micRetryTimer = null;
 
       // Tab audio
       this.tabStream = null;
@@ -1128,42 +1121,34 @@
 
     async start() {
       this.stop();
-      if (this.sourceMode === 'auto') {
-        // On tente d'abord de capturer l'audio de l'onglet (pour amplifier + route audible)
-        const tabOk = await this.try_tab();
-        // Dans tous les cas, on lance la reconnaissance sur l'entrée audio système
-        this.startMicRecognition();
-        setSourceLabel(tabOk ? 'tab+mic' : 'mic');
-        return;
-      }
-      if (this.sourceMode === 'tab') {
+      if (this.sourceMode === 'auto' || this.sourceMode === 'tab') {
+        // Audio de l'onglet UNIQUEMENT — jamais de micro.
         const ok = await this.try_tab();
-        this.startMicRecognition();
-        setSourceLabel(ok ? 'tab+mic' : 'mic');
+        if (ok) {
+          setSourceLabel('tab');
+          setOrig('🎧 Audio de l\u2019onglet capturé — lance un audio/une vidéo sur la page.', 'auto');
+          setTrad('(transcription non dispo sans STT local — à venir)', state.langTo);
+        } else {
+          setSourceLabel('—');
+          setStatus('❌ capture de l\u2019onglet refusée');
+          setOrig('Clique "Écouter" dans le popup pour autoriser la capture.', 'auto');
+          setTrad('—', state.langTo);
+        }
         return;
       }
-      if (this.sourceMode === 'mic') {
-        this.startMicRecognition();
-        setSourceLabel('mic');
-        return;
-      }
-      // Modes sous-titres (opt-in)
+      // Modes sous-titres (opt-in via cycleSource)
       if (this[`try_${this.sourceMode}`] && this[`try_${this.sourceMode}`]()) {
         setSourceLabel(this.sourceMode);
         return;
       }
-      // Fallback final
-      this.startMicRecognition();
-      setSourceLabel('mic');
+      // Si un mode non-supporté a été sélectionné, on retombe sur tab
+      const fallback = await this.try_tab();
+      setSourceLabel(fallback ? 'tab' : '—');
     }
 
     stop() {
       this.detachers.forEach(fn => { try { fn(); } catch {} });
       this.detachers = [];
-      if (this.recognition) {
-        try { this.recognition.onend = null; this.recognition.stop(); } catch {}
-        this.recognition = null;
-      }
       if (this.levelRAF) { cancelAnimationFrame(this.levelRAF); this.levelRAF = null; }
       if (this.tabStream) {
         try { this.tabStream.getTracks().forEach(t => t.stop()); } catch {}
@@ -1174,14 +1159,11 @@
         this.audioCtx = null;
       }
       this.tabGain = null; this.tabAnalyser = null;
-      clearTimeout(this.coalesceTimer); this.coalesceTimer = null;
-      clearTimeout(this.micRetryTimer); this.micRetryTimer = null;
-      this.coalesceBuf = '';
-      this.micRetries = 0;
     }
 
     cycleSource() {
-      const order = ['auto', 'tab', 'mic', 'video', 'youtube', 'netflix', 'vimeo', 'twitch', 'generic'];
+      // Plus de 'mic' — audio de l'onglet uniquement (+ sous-titres opt-in)
+      const order = ['auto', 'tab', 'video', 'youtube', 'netflix', 'vimeo', 'twitch', 'generic'];
       const idx = order.indexOf(this.sourceMode);
       this.sourceMode = order[(idx + 1) % order.length];
       toast('Source : ' + this.sourceMode);
@@ -1393,93 +1375,7 @@
       return true;
     }
 
-    /* --- Micro --- */
-    startMicRecognition() {
-      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SR) {
-        setStatus('reconnaissance vocale non supportée');
-        setOrig('⚠️ Votre navigateur ne supporte pas SpeechRecognition.', 'auto');
-        return;
-      }
-      const r = new SR();
-      r.continuous = true;
-      r.interimResults = true;
-      r.lang = SPEECH_LANG[state.langFrom] || 'en-US';
-
-      let lastFinal = '';
-      r.onresult = (e) => {
-        this.micRetries = 0; // reset backoff après un result
-        let interim = '', final = '';
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          const res = e.results[i];
-          if (res.isFinal) final += res[0].transcript;
-          else interim += res[0].transcript;
-        }
-        const srcLang = state.langFrom === 'auto' ? 'en' : state.langFrom;
-        if (final) {
-          const clean = final.trim();
-          if (clean && clean !== lastFinal) {
-            lastFinal = clean;
-            this.feedCoalescer(clean, srcLang);
-          }
-        } else if (interim) {
-          const t = interim.trim();
-          if (t) setOrig(t + ' …', srcLang);
-        }
-      };
-      r.onerror = (e) => {
-        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-          setStatus('micro refusé');
-          setOrig('⚠️ Autorisez le microphone pour la capture audio.', 'auto');
-          return;
-        }
-        setStatus('erreur : ' + e.error);
-      };
-      r.onend = () => {
-        if (!state.audio || this.paused) return;
-        // Relance avec backoff exponentiel en cas d'échecs répétés
-        this.micRetries = Math.min(this.micRetries + 1, 6);
-        const delay = Math.min(200 * Math.pow(1.7, this.micRetries - 1), 4000);
-        this.micRetryTimer = setTimeout(() => {
-          try { r.start(); } catch {}
-        }, delay);
-      };
-      try {
-        r.start();
-        setStatus('🎙️ micro actif');
-        setOrig('Parlez ou laissez la vidéo jouer près du micro…', 'auto');
-      } catch (err) {
-        setStatus('impossible de démarrer');
-      }
-      this.recognition = r;
-    }
-
-    /* --- Sentence coalescer ---
-       Plutôt que traduire chaque fragment, on regroupe jusqu'à :
-       - un point / ? / ! (fin de phrase)
-       - ou 800 ms sans nouveau fragment
-       → traduction plus fluide et contextuelle. */
-    feedCoalescer(fragment, srcLang) {
-      this.coalesceSrcLang = srcLang || this.coalesceSrcLang || 'auto';
-      const joined = (this.coalesceBuf + ' ' + fragment).trim();
-      this.coalesceBuf = joined;
-      setOrig(joined, this.coalesceSrcLang);
-
-      clearTimeout(this.coalesceTimer);
-      const endsSentence = /[.?!…](\s|$)|[。！？]$/.test(joined);
-      const flush = () => {
-        const text = this.coalesceBuf.trim();
-        this.coalesceBuf = '';
-        this.coalesceTimer = null;
-        if (text) this.handleCaption(text, this.coalesceSrcLang);
-      };
-      if (endsSentence && joined.length >= 4) {
-        // Flush rapide
-        this.coalesceTimer = setTimeout(flush, 120);
-      } else {
-        this.coalesceTimer = setTimeout(flush, 800);
-      }
-    }
+    /* Micro volontairement supprimé — capture onglet uniquement. */
 
     async handleCaption(rawText, sourceLang) {
       if (this.paused) return;
