@@ -1,0 +1,233 @@
+/* =====================================================
+   Traducteur Universel — Content script (Liquid Glass)
+   Tous les éléments sont préfixés ".tu-" pour éviter
+   toute collision avec le CSS de la page hôte.
+   ===================================================== */
+
+.tu-root,
+.tu-root * {
+  box-sizing: border-box;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter",
+               "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+}
+
+.tu-glass {
+  background: rgba(18, 20, 48, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 14px;
+  backdrop-filter: blur(22px) saturate(170%);
+  -webkit-backdrop-filter: blur(22px) saturate(170%);
+  box-shadow:
+    0 12px 36px rgba(8, 12, 40, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  color: #f4f7ff;
+  position: relative;
+}
+.tu-glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg,
+    rgba(255,255,255,0.5),
+    rgba(255,255,255,0.05) 40%,
+    rgba(255,255,255,0.2) 70%,
+    rgba(255,255,255,0.02));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* ========== TOOLTIP ========== */
+.tu-tooltip {
+  position: absolute;
+  z-index: 2147483646;
+  width: 280px;
+  padding: 12px;
+  font-size: 13px;
+  color: #f4f7ff;
+  pointer-events: auto;
+  opacity: 0;
+  transform: translateY(6px) scale(0.97);
+  transition: opacity 0.22s ease, transform 0.22s cubic-bezier(0.22,1,0.36,1);
+}
+.tu-tooltip.tu-show {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+.tu-tooltip .tu-arrow {
+  position: absolute;
+  bottom: -7px;
+  left: 24px;
+  width: 14px; height: 14px;
+  background: rgba(18, 20, 48, 0.55);
+  border-right: 1px solid rgba(255, 255, 255, 0.24);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.24);
+  transform: rotate(45deg);
+  backdrop-filter: blur(22px);
+}
+.tu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 2px;
+  font-size: 13px;
+}
+.tu-row.tu-translated {
+  border-top: 1px dashed rgba(255,255,255,0.14);
+  margin-top: 4px;
+  padding-top: 8px;
+}
+.tu-flag { font-size: 14px; }
+.tu-pos { color: rgba(244,247,255,0.55); font-size: 11px; font-style: italic; }
+.tu-word { font-weight: 600; color: #fff; }
+.tu-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(255,255,255,0.14);
+}
+.tu-mini-btn {
+  padding: 6px 10px;
+  font-size: 11.5px;
+  color: #f4f7ff;
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+.tu-mini-btn:hover {
+  background: rgba(255,255,255,0.15);
+  transform: translateY(-1px);
+}
+.tu-mini-btn.tu-wide { flex: 1; }
+
+/* ========== QCM INLINE ========== */
+.tu-trad-inline {
+  display: inline-block;
+  margin-left: 6px;
+  padding-left: 8px;
+  font-size: 0.92em;
+  font-style: italic;
+  color: #9fc3ff;
+  border-left: 2px solid rgba(122,167,255,0.45);
+  animation: tuFadeIn 0.4s ease;
+  vertical-align: baseline;
+}
+
+/* Traduction d'une question : bloc distinct sous l'intitulé */
+.tu-trad-question {
+  display: block;
+  margin-top: 6px;
+  padding: 6px 10px;
+  font-size: 0.82em;
+  font-weight: 500;
+  font-style: italic;
+  color: #c8d9ff;
+  background: linear-gradient(135deg, rgba(122,167,255,0.14), rgba(184,146,255,0.10));
+  border-left: 3px solid rgba(122,167,255,0.55);
+  border-radius: 6px;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+  animation: tuFadeIn 0.4s ease;
+}
+
+@keyframes tuFadeIn {
+  from { opacity: 0; transform: translateX(-4px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* ========== AUDIO WIDGET ========== */
+.tu-audio {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: 360px;
+  z-index: 2147483645;
+  overflow: hidden;
+  font-size: 13px;
+  animation: tuWidgetIn 0.5s cubic-bezier(0.22,1,0.36,1);
+}
+@keyframes tuWidgetIn {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.tu-audio.tu-min { width: 220px; }
+.tu-audio.tu-min .tu-body,
+.tu-audio.tu-min .tu-foot { display: none; }
+
+.tu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  cursor: grab;
+  border-bottom: 1px solid rgba(255,255,255,0.12);
+  user-select: none;
+}
+.tu-head:active { cursor: grabbing; }
+.tu-title { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.tu-rec-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #ff7a8c;
+  box-shadow: 0 0 10px #ff7a8c;
+  animation: tuPulse 1.5s ease-in-out infinite;
+}
+@keyframes tuPulse {
+  0%,100% { opacity: 1; }
+  50%     { opacity: 0.4; }
+}
+.tu-head-btns { display: flex; gap: 4px; }
+.tu-body { padding: 14px; }
+.tu-line {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 4px 10px;
+  align-items: center;
+}
+.tu-line p {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+  font-size: 14px;
+  color: #fff;
+  font-style: italic;
+}
+.tu-muted { color: rgba(244,247,255,0.6); }
+.tu-small { font-size: 11.5px; }
+.tu-divider {
+  height: 1px;
+  margin: 10px 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.18), transparent);
+}
+.tu-foot {
+  display: flex;
+  gap: 6px;
+  padding: 10px 14px;
+  border-top: 1px solid rgba(255,255,255,0.12);
+}
+.tu-foot .tu-mini-btn { flex: 1; text-align: center; }
+
+/* ========== TOAST ========== */
+.tu-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 32px;
+  transform: translateX(-50%) translateY(10px);
+  padding: 12px 22px;
+  font-size: 13px;
+  z-index: 2147483647;
+  opacity: 0;
+  transition: all 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+.tu-toast.tu-show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}

@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Traducteur Universel</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="bg-aurora">
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+    <div class="grain"></div>
+  </div>
+
+  <!-- ============= MAIN VIEW ============= -->
+  <div class="popup view is-visible" id="mainView">
+    <header class="popup-header">
+      <div class="popup-brand">
+        <span class="popup-logo">🌐</span>
+        <span class="popup-title">Traducteur Universel</span>
+      </div>
+      <div class="popup-header-actions">
+        <button class="pill-btn" id="btnSettings" title="Paramètres">⚙️</button>
+        <button class="pill-btn" id="btnProfile"  title="Profil">👤</button>
+      </div>
+    </header>
+
+    <section class="popup-card glass">
+      <div class="popup-card-head">
+        <h3>🎛️ Centre de contrôle</h3>
+        <span class="domain-pill" id="domainPill">—</span>
+      </div>
+      <p class="muted small">Activez les modules sur cette page :</p>
+
+      <label class="toggle-row">
+        <div class="toggle-info">
+          <span class="toggle-icon">🖱️</span>
+          <div>
+            <div class="toggle-label">Traduction à la sélection</div>
+            <div class="toggle-sub">Info-bulle au survol / clic</div>
+          </div>
+        </div>
+        <span class="switch">
+          <input type="checkbox" id="tgSelection" />
+          <span class="slider"></span>
+        </span>
+      </label>
+
+      <div class="toggle-row action-row-qcm">
+        <div class="toggle-info">
+          <span class="toggle-icon">☑️</span>
+          <div>
+            <div class="toggle-label">Traduction QCM</div>
+            <div class="toggle-sub">Détecte et traduit les formulaires</div>
+          </div>
+        </div>
+        <button class="action-btn" id="btnQcm" title="Traduire les QCM détectés">Traduire</button>
+      </div>
+
+      <label class="toggle-row">
+        <div class="toggle-info">
+          <span class="toggle-icon">🎙️</span>
+          <div>
+            <div class="toggle-label">Capture Audio Live</div>
+            <div class="toggle-sub">Sous-titres en temps réel</div>
+          </div>
+        </div>
+        <span class="switch">
+          <input type="checkbox" id="tgAudio" />
+          <span class="slider"></span>
+        </span>
+      </label>
+    </section>
+
+    <section class="popup-card glass">
+      <div class="popup-card-head">
+        <h3>✍️ Traduction Rapide</h3>
+        <button class="mini-star" id="btnFav" title="Ajouter aux favoris">☆</button>
+      </div>
+
+      <div class="lang-row">
+        <div class="lang-select">
+          <select id="langFrom">
+            <option value="auto">🌍 Auto</option>
+            <option value="en">🇺🇸 Anglais</option>
+            <option value="es">🇪🇸 Espagnol</option>
+            <option value="de">🇩🇪 Allemand</option>
+            <option value="it">🇮🇹 Italien</option>
+            <option value="fr">🇫🇷 Français</option>
+          </select>
+        </div>
+        <button class="swap-btn" id="swapLang" title="Inverser">⇄</button>
+        <div class="lang-select">
+          <select id="langTo">
+            <option value="fr">🇫🇷 Français</option>
+            <option value="en">🇺🇸 Anglais</option>
+            <option value="es">🇪🇸 Espagnol</option>
+            <option value="de">🇩🇪 Allemand</option>
+            <option value="it">🇮🇹 Italien</option>
+            <option value="ja">🇯🇵 Japonais</option>
+            <option value="zh">🇨🇳 Chinois</option>
+            <option value="ru">🇷🇺 Russe</option>
+            <option value="ar">🇸🇦 Arabe</option>
+            <option value="pt">🇵🇹 Portugais</option>
+            <option value="ko">🇰🇷 Coréen</option>
+          </select>
+        </div>
+      </div>
+
+      <textarea id="srcText" class="gl-textarea" placeholder="Collez un mot ou une phrase ici…"></textarea>
+
+      <div class="result-box">
+        <span class="result-label">Résultat</span>
+        <div id="resultText" class="result-text muted">—</div>
+      </div>
+
+      <div class="action-row">
+        <button class="ghost-btn" id="copyBtn">📋 Copier</button>
+        <button class="ghost-btn" id="listenBtn">🔊 Écouter</button>
+        <button class="primary-btn" id="translateBtn">Traduire</button>
+      </div>
+    </section>
+
+    <footer class="popup-footer">
+      <span class="status-dot"></span>
+      <span class="muted small">Connecté · v1.0.0</span>
+    </footer>
+  </div>
+
+  <!-- ============= SETTINGS PANEL ============= -->
+  <div class="view panel" id="settingsView" aria-hidden="true">
+    <header class="panel-head glass">
+      <button class="pill-btn panel-back" data-close-panel title="Retour">←</button>
+      <h2 class="panel-title">⚙️ Paramètres</h2>
+    </header>
+
+    <div class="panel-body">
+
+      <section class="popup-card glass">
+        <div class="popup-card-head">
+          <h3>🌍 Langues</h3>
+        </div>
+        <div class="setting-row">
+          <label for="settLangFrom">Langue source par défaut</label>
+          <select id="settLangFrom">
+            <option value="auto">🌍 Auto</option>
+            <option value="en">🇺🇸 Anglais</option>
+            <option value="fr">🇫🇷 Français</option>
+            <option value="es">🇪🇸 Espagnol</option>
+            <option value="de">🇩🇪 Allemand</option>
+            <option value="it">🇮🇹 Italien</option>
+            <option value="ja">🇯🇵 Japonais</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <label for="settLangTo">Langue cible</label>
+          <select id="settLangTo">
+            <option value="fr">🇫🇷 Français</option>
+            <option value="en">🇺🇸 Anglais</option>
+            <option value="es">🇪🇸 Espagnol</option>
+            <option value="de">🇩🇪 Allemand</option>
+            <option value="it">🇮🇹 Italien</option>
+            <option value="ja">🇯🇵 Japonais</option>
+            <option value="zh">🇨🇳 Chinois</option>
+            <option value="ru">🇷🇺 Russe</option>
+            <option value="ar">🇸🇦 Arabe</option>
+            <option value="pt">🇵🇹 Portugais</option>
+            <option value="ko">🇰🇷 Coréen</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="popup-card glass">
+        <div class="popup-card-head">
+          <h3>🖱️ Sélection & Survol</h3>
+        </div>
+        <label class="toggle-row">
+          <div class="toggle-info">
+            <span class="toggle-icon">✨</span>
+            <div>
+              <div class="toggle-label">Traduction activée</div>
+              <div class="toggle-sub">Tooltip sur sélection ou survol</div>
+            </div>
+          </div>
+          <span class="switch">
+            <input type="checkbox" id="settSelection" />
+            <span class="slider"></span>
+          </span>
+        </label>
+        <div class="setting-row slider-row">
+          <label>
+            Délai de survol
+            <span class="setting-val" id="settHoverVal">450 ms</span>
+          </label>
+          <input type="range" id="settHoverDelay" min="150" max="1200" step="50" value="450" />
+        </div>
+      </section>
+
+      <section class="popup-card glass">
+        <div class="popup-card-head">
+          <h3>🔊 Synthèse vocale</h3>
+        </div>
+        <div class="setting-row slider-row">
+          <label>
+            Vitesse de lecture
+            <span class="setting-val" id="settTtsVal">1.0×</span>
+          </label>
+          <input type="range" id="settTtsRate" min="0.5" max="2" step="0.1" value="1" />
+        </div>
+      </section>
+
+      <section class="popup-card glass">
+        <div class="popup-card-head">
+          <h3>📚 Historique</h3>
+        </div>
+        <label class="toggle-row">
+          <div class="toggle-info">
+            <span class="toggle-icon">📝</span>
+            <div>
+              <div class="toggle-label">Mémoriser les traductions</div>
+              <div class="toggle-sub">Conservé localement uniquement</div>
+            </div>
+          </div>
+          <span class="switch">
+            <input type="checkbox" id="settHistory" checked />
+            <span class="slider"></span>
+          </span>
+        </label>
+        <div class="action-row">
+          <button class="ghost-btn" id="btnClearHistory">🗑️ Vider historique</button>
+          <button class="ghost-btn" id="btnClearCache">♻️ Vider cache</button>
+        </div>
+      </section>
+
+      <section class="popup-card glass">
+        <div class="popup-card-head">
+          <h3>🛠️ Avancé</h3>
+        </div>
+        <button class="ghost-btn danger full-btn" id="btnResetAll">↺ Réinitialiser l'extension</button>
+      </section>
+
+      <section class="popup-card glass about-card">
+        <p class="about-brand">🌐 Traducteur Universel</p>
+        <p class="muted small">v1.0.0 · Style Liquid Glass</p>
+        <p class="muted small">Chrome Extension · MV3</p>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- ============= PROFILE PANEL ============= -->
+  <div class="view panel" id="profileView" aria-hidden="true">
+    <header class="panel-head glass">
+      <button class="pill-btn panel-back" data-close-panel title="Retour">←</button>
+      <h2 class="panel-title">👤 Profil</h2>
+    </header>
+
+    <div class="panel-body">
+
+      <section class="popup-card glass profile-card">
+        <div class="avatar-ring">
+          <span class="avatar-emoji" id="profileAvatar">👤</span>
+        </div>
+        <input type="text" class="profile-name" id="profileName" placeholder="Votre nom" maxlength="40" />
+        <div class="avatar-picker" id="avatarPicker">
+          <button class="avatar-btn" data-avatar="👤">👤</button>
+          <button class="avatar-btn" data-avatar="🧑">🧑</button>
+          <button class="avatar-btn" data-avatar="👩">👩</button>
+          <button class="avatar-btn" data-avatar="👨">👨</button>
+          <button class="avatar-btn" data-avatar="👧">👧</button>
+          <button class="avatar-btn" data-avatar="👦">👦</button>
+          <button class="avatar-btn" data-avatar="🌟">🌟</button>
+          <button class="avatar-btn" data-avatar="🚀">🚀</button>
+          <button class="avatar-btn" data-avatar="🎨">🎨</button>
+          <button class="avatar-btn" data-avatar="🦊">🦊</button>
+          <button class="avatar-btn" data-avatar="🐱">🐱</button>
+          <button class="avatar-btn" data-avatar="🐼">🐼</button>
+        </div>
+      </section>
+
+      <section class="popup-card glass">
+        <div class="popup-card-head">
+          <h3>📊 Statistiques</h3>
+        </div>
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-value" id="statTotal">0</div>
+            <div class="stat-label">traductions</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="statLang">—</div>
+            <div class="stat-label">langue n°1</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="statDays">0</div>
+            <div class="stat-label">jours</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="popup-card glass">
+        <div class="popup-card-head">
+          <h3>🕘 Historique récent</h3>
+          <span class="count-pill" id="historyCount">0</span>
+        </div>
+        <div class="history-list" id="historyList">
+          <p class="muted small empty-hint">Vos traductions apparaîtront ici.</p>
+        </div>
+      </section>
+
+      <section class="popup-card glass">
+        <div class="popup-card-head">
+          <h3>⭐ Favoris</h3>
+          <span class="count-pill" id="favoritesCount">0</span>
+        </div>
+        <div class="history-list" id="favoritesList">
+          <p class="muted small empty-hint">Cliquez sur ☆ pour ajouter un favori.</p>
+        </div>
+      </section>
+
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
