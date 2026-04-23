@@ -387,24 +387,43 @@ html, body {
 .qcm-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   flex-shrink: 0;
 }
 .qcm-auto {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  font-size: 11px;
+  gap: 4px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: var(--text-muted);
   cursor: pointer;
   user-select: none;
 }
-.qcm-auto-label { font-weight: 500; }
-.switch.switch-sm { width: 30px; height: 18px; }
-.switch.switch-sm .slider::before {
-  width: 14px; height: 14px; top: 1px; left: 1px;
+.qcm-auto-label {
+  font-weight: 600;
+  line-height: 1;
 }
-.switch.switch-sm input:checked + .slider::before { left: 14px; }
+.switch.switch-sm {
+  width: 34px;
+  height: 20px;
+}
+.switch.switch-sm .slider {
+  background: rgba(255, 255, 255, 0.22);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+.switch.switch-sm .slider::before {
+  width: 14px; height: 14px;
+  top: 50%;
+  left: 3px;
+  transform: translateY(-50%);
+}
+.switch.switch-sm input:checked + .slider::before {
+  left: 17px;
+  transform: translateY(-50%);
+}
 
 /* =====================================================
    View system : mainView + panels (Settings / Profile)
