@@ -145,10 +145,11 @@
 
 /* ========== AUDIO WIDGET ========== */
 .tu-audio {
+  --tu-font-size: 14px;
   position: fixed;
   right: 24px;
   bottom: 24px;
-  width: 360px;
+  width: 380px;
   z-index: 2147483645;
   overflow: hidden;
   font-size: 13px;
@@ -195,9 +196,10 @@
 .tu-line p {
   grid-column: 1 / -1;
   margin: 4px 0 0;
-  font-size: 14px;
+  font-size: var(--tu-font-size);
   color: #fff;
   font-style: italic;
+  word-wrap: break-word;
 }
 .tu-muted { color: rgba(244,247,255,0.6); }
 .tu-small { font-size: 11.5px; }
@@ -211,8 +213,113 @@
   gap: 6px;
   padding: 10px 14px;
   border-top: 1px solid rgba(255,255,255,0.12);
+  flex-wrap: wrap;
 }
-.tu-foot .tu-mini-btn { flex: 1; text-align: center; }
+.tu-foot .tu-mini-btn { flex: 1 1 auto; text-align: center; min-width: 0; padding: 6px 8px; }
+
+/* History rolling */
+.tu-history {
+  margin-top: 12px;
+  padding: 8px 10px;
+  max-height: 180px;
+  overflow-y: auto;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tu-history::-webkit-scrollbar { width: 6px; }
+.tu-history::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 3px; }
+.tu-hist-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  font-size: 11.5px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed rgba(255,255,255,0.08);
+}
+.tu-hist-item:last-child { border-bottom: none; padding-bottom: 0; }
+.tu-hist-time { color: rgba(244,247,255,0.45); font-family: monospace; }
+.tu-hist-src  { color: #fff; }
+.tu-hist-trad {
+  grid-column: 2;
+  color: #9fc3ff;
+  font-style: italic;
+}
+
+/* Header source label */
+.tu-src-label { color: rgba(244,247,255,0.45); font-size: 10.5px; }
+
+/* Gain slider (amplification audio onglet) */
+.tu-gain-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+.tu-gain {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 4px;
+  background: rgba(255,255,255,0.12);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+.tu-gain::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #a9c5ff, #c9b5ff);
+  box-shadow: 0 0 8px rgba(122,167,255,0.6);
+  border: none;
+}
+.tu-gain::-moz-range-thumb {
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #a9c5ff, #c9b5ff);
+  border: none;
+}
+.tu-gain-val { font-family: monospace; min-width: 36px; text-align: right; }
+
+/* VU-mètre audio onglet */
+.tu-level {
+  margin-top: 6px;
+  height: 4px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.tu-level-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #62e6c8, #7aa7ff);
+  border-radius: 2px;
+  transition: width 80ms linear;
+}
+.tu-level-bar.tu-level-hot {
+  background: linear-gradient(90deg, #ffb36a, #ff7a8c);
+}
+
+/* Bloc d'aide */
+.tu-help {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: rgba(122,167,255,0.08);
+  border: 1px solid rgba(122,167,255,0.22);
+  border-radius: 10px;
+  font-size: 11.5px;
+  color: #dbe6ff;
+  line-height: 1.55;
+}
+.tu-help-title { font-weight: 600; margin-bottom: 6px; color: #fff; }
+.tu-help ul { margin: 0; padding-left: 18px; }
+.tu-help li { margin: 3px 0; }
+.tu-help b { color: #b4d0ff; }
 
 /* ========== TOAST ========== */
 .tu-toast {

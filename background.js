@@ -8,7 +8,7 @@
 const DEFAULTS = {
   selection: true,
   qcm: false,
-  audio: true,
+  audio: false,
   langFrom: 'auto',
   langTo: 'fr',
 };
@@ -205,6 +205,92 @@ async function translate(text, from, to) {
 }
 
 /* =========================================================
+   Traduction en lot (plusieurs textes d'un coup)
+   - Google gtx accepte plusieurs &q=... mais la réponse combine
+     les phrases. On utilise un séparateur unique inséré côté client
+     pour rester robuste et minimiser les requêtes (×4 à ×8 plus rapide).
+   ========================================================= */
+const BATCH_SEP = '\n@@@TU_SEP@@@\n';
+
+async function translateBatchJoined(texts, from, to) {
+  const joined = texts.join(BATCH_SEP);
+  // 1) essai gtx (meilleur rendu phrase par phrase)
+  try {
+    const r = await fetchGoogleGtx(joined, from, to);
+    const parts = (r.translated || '').split(/\s*@@@TU_SEP@@@\s*/);
+    if (parts.length === texts.length) {
+      return { parts, detected: r.detected || '', engine: r.engine };
+    }
+  } catch {}
+  // 2) fallback dict
+  try {
+    const r = await fetchGoogleDict(joined, from, to);
+    const parts = (r.translated || '').split(/\s*@@@TU_SEP@@@\s*/);
+    if (parts.length === texts.length) {
+      return { parts, detected: r.detected || '', engine: r.engine };
+    }
+  } catch {}
+  return null; // on retombera sur un fallback individuel côté caller
+}
+
+async function translateBatch(texts, from, to) {
+  const clean = texts.map(t => (t || '').trim());
+  const valid = clean.map((t, i) => ({ t, i })).filter(x => x.t);
+  const results = new Array(clean.length).fill(null);
+
+  if (!valid.length) return { results, detected: '' };
+
+  // Découpe en paquets qui rentrent dans une URL (~2000 chars par batch)
+  const MAX_BATCH_CHARS = 1800;
+  const batches = [];
+  let cur = [];
+  let curLen = 0;
+  for (const v of valid) {
+    const add = v.t.length + BATCH_SEP.length;
+    if (cur.length && curLen + add > MAX_BATCH_CHARS) {
+      batches.push(cur); cur = []; curLen = 0;
+    }
+    cur.push(v);
+    curLen += add;
+  }
+  if (cur.length) batches.push(cur);
+
+  let detected = '';
+  await Promise.all(batches.map(async (batch) => {
+    const texts = batch.map(x => x.t);
+    const b = await translateBatchJoined(texts, from, to);
+    if (b && Array.isArray(b.parts) && b.parts.length === batch.length) {
+      if (!detected) detected = b.detected || '';
+      batch.forEach((x, k) => {
+        const tr = (b.parts[k] || '').trim();
+        if (tr && !sameText(tr, x.t)) {
+          results[x.i] = { translated: tr, detected: b.detected || '', engine: b.engine };
+        }
+      });
+    } else {
+      // Fallback individuel (limité en parallèle)
+      const concurrency = 4;
+      let idx = 0;
+      const workers = Array.from({ length: concurrency }, () => (async () => {
+        while (idx < batch.length) {
+          const my = batch[idx++];
+          try {
+            const r = await translate(my.t, from, to);
+            if (r && r.translated && !sameText(r.translated, my.t)) {
+              results[my.i] = r;
+              if (!detected) detected = r.detected || '';
+            }
+          } catch {}
+        }
+      })());
+      await Promise.all(workers);
+    }
+  }));
+
+  return { results, detected };
+}
+
+/* =========================================================
    Messages
    ========================================================= */
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -223,11 +309,41 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true; // réponse asynchrone
   }
 
+  if (msg.type === 'TRANSLATE_BATCH') {
+    const arr = Array.isArray(msg.texts) ? msg.texts : [];
+    translateBatch(arr, msg.from || 'auto', msg.to || 'fr')
+      .then(r => sendResponse({ ok: true, results: r.results, detected: r.detected }))
+      .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
+    return true;
+  }
+
   if (msg.type === 'TTS_SPEAK') {
     try {
       chrome.tts.stop();
       chrome.tts.speak(msg.text || '', { lang: msg.lang || 'fr-FR', rate: 1.0 });
     } catch (err) { console.warn('TU: tts error', err); }
     return;
+  }
+
+  if (msg.type === 'GET_TAB_STREAM_ID') {
+    const tabId = sender?.tab?.id;
+    if (!tabId) { sendResponse({ ok: false, error: 'aucun onglet sender' }); return; }
+    try {
+      chrome.tabCapture.getMediaStreamId(
+        { consumerTabId: tabId, targetTabId: tabId },
+        (streamId) => {
+          if (chrome.runtime.lastError) {
+            sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+          } else if (!streamId) {
+            sendResponse({ ok: false, error: 'streamId vide' });
+          } else {
+            sendResponse({ ok: true, streamId });
+          }
+        }
+      );
+    } catch (err) {
+      sendResponse({ ok: false, error: err?.message || String(err) });
+    }
+    return true; // async
   }
 });

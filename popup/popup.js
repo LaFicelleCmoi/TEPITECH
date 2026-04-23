@@ -10,7 +10,8 @@
 
   const SYNC_DEFAULTS = {
     selection: true,
-    audio: true,
+    qcm: false,
+    audio: false,
     langFrom: 'auto',
     langTo: 'fr',
     hoverDelay: 450,
@@ -45,8 +46,10 @@
     // Main
     domain:     $('domainPill'),
     tgSelection:$('tgSelection'),
+    tgQcm:      $('tgQcm'),
     btnQcm:     $('btnQcm'),
     tgAudio:    $('tgAudio'),
+    btnAudio:   $('btnAudio'),
     langFrom:   $('langFrom'),
     langTo:     $('langTo'),
     swap:       $('swapLang'),
@@ -171,6 +174,24 @@
 
   el.tgSelection.addEventListener('change', () => saveSync({ selection: el.tgSelection.checked }));
   el.tgAudio    .addEventListener('change', () => saveSync({ audio:     el.tgAudio.checked }));
+  el.tgQcm      .addEventListener('change', async () => {
+    const on = el.tgQcm.checked;
+    await saveSync({ qcm: on });
+    // Quand on active l'auto, on lance immédiatement un premier scan
+    if (on) {
+      try {
+        const tab = await getActiveTab();
+        if (tab?.id) {
+          try { await chrome.tabs.sendMessage(tab.id, { type: 'RUN_QCM' }); }
+          catch {
+            await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/content.js'] });
+            await chrome.scripting.insertCSS   ({ target: { tabId: tab.id }, files: ['content/content.css'] });
+            await chrome.tabs.sendMessage(tab.id, { type: 'RUN_QCM' });
+          }
+        }
+      } catch {}
+    }
+  });
 
   el.langFrom.addEventListener('change', () => { saveSync({ langFrom: el.langFrom.value }); doTranslate(); });
   el.langTo  .addEventListener('change', () => { saveSync({ langTo:   el.langTo.value });   doTranslate(); });
@@ -182,6 +203,37 @@
     el.langTo.value   = a;
     saveSync({ langFrom: el.langFrom.value, langTo: el.langTo.value });
     if (el.src.value.trim()) doTranslate();
+  });
+
+  /* Bouton Audio (action à la demande — garantit un user gesture pour tabCapture) */
+  el.btnAudio.addEventListener('click', async () => {
+    const original = el.btnAudio.textContent;
+    el.btnAudio.disabled = true;
+    el.btnAudio.textContent = '⏳ …';
+    el.btnAudio.classList.remove('is-success');
+    try {
+      const tab = await getActiveTab();
+      if (!tab?.id) throw new Error('onglet introuvable');
+      // Active le flag audio dans le storage (déclenche SETTINGS_UPDATED côté content)
+      await saveSync({ audio: true });
+      try {
+        await chrome.tabs.sendMessage(tab.id, { type: 'CTX_START_AUDIO' });
+      } catch {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/content.js'] });
+        await chrome.scripting.insertCSS   ({ target: { tabId: tab.id }, files: ['content/content.css'] });
+        await chrome.tabs.sendMessage(tab.id, { type: 'CTX_START_AUDIO' });
+      }
+      el.btnAudio.classList.add('is-success');
+      el.btnAudio.textContent = '✅ Lancé';
+      setTimeout(() => window.close(), 400);
+    } catch (err) {
+      el.btnAudio.textContent = '⚠️ Erreur';
+      setTimeout(() => {
+        el.btnAudio.textContent = original;
+        el.btnAudio.disabled = false;
+        el.btnAudio.classList.remove('is-success');
+      }, 1600);
+    }
   });
 
   /* Bouton QCM (action à la demande) */
@@ -530,6 +582,7 @@
     // Charge les langues / toggles dans la vue principale
     const s = await loadSync();
     el.tgSelection.checked = !!s.selection;
+    el.tgQcm      .checked = !!s.qcm;
     el.tgAudio    .checked = !!s.audio;
     if (s.langFrom) el.langFrom.value = s.langFrom;
     if (s.langTo)   el.langTo  .value = s.langTo;

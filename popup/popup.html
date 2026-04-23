@@ -55,22 +55,37 @@
             <div class="toggle-sub">Détecte et traduit les formulaires</div>
           </div>
         </div>
-        <button class="action-btn" id="btnQcm" title="Traduire les QCM détectés">Traduire</button>
+        <div class="qcm-actions">
+          <label class="qcm-auto" title="Traduction automatique (surveille les nouveaux QCM)">
+            <span class="qcm-auto-label">Auto</span>
+            <span class="switch switch-sm">
+              <input type="checkbox" id="tgQcm" />
+              <span class="slider"></span>
+            </span>
+          </label>
+          <button class="action-btn" id="btnQcm" title="Traduire maintenant">Traduire</button>
+        </div>
       </div>
 
-      <label class="toggle-row">
+      <div class="toggle-row action-row-qcm">
         <div class="toggle-info">
           <span class="toggle-icon">🎙️</span>
           <div>
             <div class="toggle-label">Capture Audio Live</div>
-            <div class="toggle-sub">Sous-titres en temps réel</div>
+            <div class="toggle-sub">Audio de l'onglet en direct</div>
           </div>
         </div>
-        <span class="switch">
-          <input type="checkbox" id="tgAudio" />
-          <span class="slider"></span>
-        </span>
-      </label>
+        <div class="qcm-actions">
+          <label class="qcm-auto" title="Démarrer automatiquement sur chaque page">
+            <span class="qcm-auto-label">Auto</span>
+            <span class="switch switch-sm">
+              <input type="checkbox" id="tgAudio" />
+              <span class="slider"></span>
+            </span>
+          </label>
+          <button class="action-btn" id="btnAudio" title="Lancer la capture audio sur cet onglet">Écouter</button>
+        </div>
+      </div>
     </section>
 
     <section class="popup-card glass">

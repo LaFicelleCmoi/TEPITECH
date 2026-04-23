@@ -384,6 +384,28 @@ html, body {
 .action-row-qcm { cursor: default; }
 .action-row-qcm:hover { background: transparent; }
 
+.qcm-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.qcm-auto {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.qcm-auto-label { font-weight: 500; }
+.switch.switch-sm { width: 30px; height: 18px; }
+.switch.switch-sm .slider::before {
+  width: 14px; height: 14px; top: 1px; left: 1px;
+}
+.switch.switch-sm input:checked + .slider::before { left: 14px; }
+
 /* =====================================================
    View system : mainView + panels (Settings / Profile)
    ===================================================== */

@@ -17,7 +17,7 @@
   const DEFAULTS = {
     selection: true,
     qcm: false,
-    audio: true,
+    audio: false,
     langFrom: 'auto',
     langTo: 'fr',
   };
@@ -262,22 +262,115 @@
 
   /* =========================================================
      2. QCM INLINE TRANSLATIONS
-     - Détection multi-stratégies (inputs, ARIA, listes, frameworks)
+     - Détection multi-stratégies (inputs, ARIA, listes, tableaux, dl, frameworks)
      - Détection de la question associée
-     - Cache local + parallélisation
+     - Cache mémoire + cache persistant (chrome.storage.local, TTL 24 h)
+     - Traduction en lot (1 requête → N textes)
+     - Auto-mode (observer des changements DOM)
      ========================================================= */
   const TRAD_CLASS   = 'tu-trad-inline';
   const TRAD_Q_CLASS = 'tu-trad-question';
-  const QCM_CACHE = new Map();
+  const QCM_CACHE = new Map();          // mémoire (clé → {translated, detected})
+  const QCM_MISS  = new Set();          // textes déjà essayés sans résultat
+  const PERSIST_KEY = 'tuQcmCache';     // chrome.storage.local
+  const PERSIST_TTL = 24 * 3600 * 1000; // 24 h
+  let persistLoaded = false;
+  let persistPending = null;
+  let persistSaveTimer = null;
+
+  function cacheKey(text, from, to) {
+    return (from || 'auto') + '|' + (to || 'fr') + '|' + text.trim();
+  }
+
+  async function loadPersistentCache() {
+    if (persistLoaded) return;
+    persistLoaded = true;
+    try {
+      const stored = await new Promise(res => chrome.storage.local.get([PERSIST_KEY], res));
+      const data = stored?.[PERSIST_KEY] || {};
+      const now = Date.now();
+      for (const [k, v] of Object.entries(data)) {
+        if (!v || !v.t || (v.at && now - v.at > PERSIST_TTL)) continue;
+        QCM_CACHE.set(k, { translated: v.t, detected: v.d || '', engine: v.e || 'cache' });
+      }
+    } catch {}
+  }
+
+  function schedulePersistSave(key, val) {
+    if (!persistPending) persistPending = {};
+    persistPending[key] = { t: val.translated, d: val.detected || '', e: val.engine || '', at: Date.now() };
+    clearTimeout(persistSaveTimer);
+    persistSaveTimer = setTimeout(async () => {
+      const toWrite = persistPending;
+      persistPending = null;
+      try {
+        const stored = await new Promise(res => chrome.storage.local.get([PERSIST_KEY], res));
+        const data = stored?.[PERSIST_KEY] || {};
+        Object.assign(data, toWrite);
+        // Garde-fou : taille raisonnable (~2000 entrées)
+        const entries = Object.entries(data);
+        if (entries.length > 2200) {
+          entries.sort((a, b) => (b[1]?.at || 0) - (a[1]?.at || 0));
+          const trimmed = Object.fromEntries(entries.slice(0, 2000));
+          await new Promise(res => chrome.storage.local.set({ [PERSIST_KEY]: trimmed }, res));
+        } else {
+          await new Promise(res => chrome.storage.local.set({ [PERSIST_KEY]: data }, res));
+        }
+      } catch {}
+    }, 600);
+  }
 
   async function cachedTranslate(text, from, to) {
-    const key = (from || 'auto') + '|' + (to || 'fr') + '|' + text.trim();
+    const key = cacheKey(text, from, to);
     if (QCM_CACHE.has(key)) return QCM_CACHE.get(key);
+    if (QCM_MISS.has(key))  return null;
     try {
       const r = await apiTranslate(text, from, to);
-      QCM_CACHE.set(key, r);
+      if (r && r.translated) {
+        QCM_CACHE.set(key, r);
+        schedulePersistSave(key, r);
+      } else {
+        QCM_MISS.add(key);
+      }
       return r;
-    } catch { return null; }
+    } catch { QCM_MISS.add(key); return null; }
+  }
+
+  /* --- Traduction en lot : gros gain sur les QCM (1 requête = N textes) --- */
+  async function batchTranslateTexts(texts, from, to) {
+    // Applique le cache d'abord
+    const results = new Array(texts.length).fill(null);
+    const pending = [];
+    const pendingIdx = [];
+    texts.forEach((t, i) => {
+      const k = cacheKey(t, from, to);
+      if (QCM_CACHE.has(k)) { results[i] = QCM_CACHE.get(k); return; }
+      if (QCM_MISS.has(k))  { return; }
+      pending.push(t);
+      pendingIdx.push(i);
+    });
+    if (!pending.length) return { results, detected: '' };
+
+    let detected = '';
+    try {
+      const res = await sendBG({ type: 'TRANSLATE_BATCH', texts: pending, from, to });
+      if (res?.ok && Array.isArray(res.results)) {
+        detected = res.detected || '';
+        res.results.forEach((r, k) => {
+          const text = pending[k];
+          const idx  = pendingIdx[k];
+          const key  = cacheKey(text, from, to);
+          if (r && r.translated) {
+            results[idx] = r;
+            QCM_CACHE.set(key, r);
+            schedulePersistSave(key, r);
+          } else {
+            QCM_MISS.add(key);
+          }
+        });
+      }
+    } catch {}
+    return { results, detected };
   }
 
   function sameText(a, b) {
@@ -400,6 +493,61 @@
       groups.push({ container: list, options: items, kind: 'list' });
     });
 
+    /* --- Stratégie 4 : <dl><dt><dd> --- */
+    document.querySelectorAll('dl').forEach(dl => {
+      if (seen.has(dl)) return;
+      const dds = Array.from(dl.querySelectorAll(':scope > dd')).filter(n => !seen.has(n));
+      if (dds.length < 2 || dds.length > 12) return;
+      let total = 0;
+      dds.forEach(dd => total += (dd.textContent || '').length);
+      if (total / dds.length > 160) return;
+      if (dl.closest('nav, header, footer, aside')) return;
+      dds.forEach(n => seen.add(n));
+      seen.add(dl);
+      groups.push({ container: dl, options: dds, kind: 'dl' });
+    });
+
+    /* --- Stratégie 5 : classes usuelles des frameworks de quiz --- */
+    const QCM_SELECTORS = [
+      '.answers .answer', '.quiz-answers .quiz-answer',
+      '.qcm-option', '.qcm__option', '.question-choices .choice',
+      '.choices .choice', '.options .option',
+      '[data-qcm-option]', '[data-answer]', '[data-choice]'
+    ].join(',');
+    const candidateGroups = new Map();
+    document.querySelectorAll(QCM_SELECTORS).forEach(n => {
+      if (seen.has(n)) return;
+      const p = n.parentElement;
+      if (!p) return;
+      if (!candidateGroups.has(p)) candidateGroups.set(p, []);
+      candidateGroups.get(p).push(n);
+    });
+    candidateGroups.forEach((options, parent) => {
+      if (options.length < 2) return;
+      if (parent.closest('nav, header, footer, aside')) return;
+      options.forEach(n => seen.add(n));
+      groups.push({ container: parent, options, kind: 'framework' });
+    });
+
+    /* --- Stratégie 6 : tableaux de réponses (<tr> avec input + libellé) --- */
+    document.querySelectorAll('table').forEach(table => {
+      if (seen.has(table)) return;
+      const rows = Array.from(table.querySelectorAll('tbody > tr, tr')).filter(tr => {
+        if (seen.has(tr)) return false;
+        return !!tr.querySelector('input[type=radio], input[type=checkbox]');
+      });
+      if (rows.length < 2 || rows.length > 12) return;
+      // Le libellé est la cellule sans input
+      const items = rows.map(tr => {
+        const cells = Array.from(tr.children);
+        const label = cells.find(c => !c.querySelector('input'));
+        return label || tr;
+      });
+      items.forEach(n => seen.add(n));
+      seen.add(table);
+      groups.push({ container: table, options: items, kind: 'table' });
+    });
+
     return groups;
   }
 
@@ -497,10 +645,12 @@
   }
 
   let qcmRunning = false;
+  let qcmPendingRun = false;
 
-  async function translateQcm() {
-    if (qcmRunning) return 0;
+  async function translateQcm({ silent = false } = {}) {
+    if (qcmRunning) { qcmPendingRun = true; return 0; }
     qcmRunning = true;
+    await loadPersistentCache();
 
     try {
       const groups      = findOptionGroups();
@@ -549,32 +699,32 @@
 
       if (!jobs.length) return 0;
 
-      // "Sniff" : traduis le plus long job d'abord pour détecter la langue.
+      // "Sniff" : pré-détection pour éviter de traduire une page déjà dans la langue cible.
       const sniff = jobs.slice().sort((a, b) => b.text.length - a.text.length)[0];
       const sniffRes = await cachedTranslate(sniff.text, from, to);
       if (sniffRes && sniffRes.detected && sniffRes.detected === to) {
         return 0;
       }
 
-      // Traduction parallèle avec cache
-      await runParallel(jobs, 4, async (job) => {
-        const r = await cachedTranslate(job.text, from, to);
+      // Traduction en LOT : 1 requête pour N textes (x4 à x8 plus rapide)
+      const texts = jobs.map(j => j.text);
+      const { results } = await batchTranslateTexts(texts, from, to);
+
+      jobs.forEach((job, i) => {
+        const r = results[i];
         if (!r || !r.translated) return;
         if (sameText(r.translated, job.text)) return;
         if (r.detected && r.detected === to) return;
 
         if (job.type === 'sentence') {
-          // Évite d'injecter deux fois
-          if (job.afterNode.nextSibling &&
+          if (job.afterNode && job.afterNode.nextSibling &&
               job.afterNode.nextSibling.nodeType === 1 &&
               job.afterNode.nextSibling.classList?.contains(TRAD_Q_CLASS)) return;
           const span = document.createElement('span');
           span.className = TRAD_Q_CLASS;
           span.textContent = r.translated;
-          job.afterNode.after(span);
+          (job.afterNode || job.node).after(span);
         } else if (job.type === 'select-option') {
-          // Les <option> ne peuvent contenir que du texte :
-          // on concatène la traduction au texte affiché (le value reste intact).
           const original = (job.node.dataset.tuOriginal || job.node.text || '').trim();
           if (!job.node.dataset.tuOriginal) job.node.dataset.tuOriginal = original;
           job.node.text = original + '  —  ' + r.translated;
@@ -585,12 +735,17 @@
       });
 
       const count = jobs.filter(j => j.node.dataset.tuTranslated === '1').length;
-      if (count > 0) {
+      if (count > 0 && !silent) {
         toast('🌐 ' + count + ' élément' + (count > 1 ? 's' : '') + ' traduit' + (count > 1 ? 's' : ''));
       }
       return count;
     } finally {
       qcmRunning = false;
+      if (qcmPendingRun) {
+        qcmPendingRun = false;
+        // Relance différée pour capter les nouveaux nœuds mutés pendant la traduction
+        setTimeout(() => translateQcm({ silent: true }), 500);
+      }
     }
   }
 
@@ -603,6 +758,44 @@
     });
     document.querySelectorAll('[data-tu-translated]').forEach(l => delete l.dataset.tuTranslated);
     QCM_CACHE.clear();
+    QCM_MISS.clear();
+  }
+
+  /* --- Auto-mode : surveille les mutations pour retraduire les nouveaux QCM --- */
+  let qcmObserver = null;
+  let qcmDebounce = null;
+
+  function startQcmAuto() {
+    if (qcmObserver) return;
+    const scheduleRun = (silent = true) => {
+      clearTimeout(qcmDebounce);
+      qcmDebounce = setTimeout(() => translateQcm({ silent }).catch(() => {}), 450);
+    };
+
+    qcmObserver = new MutationObserver((mutations) => {
+      // Ignore nos propres mutations
+      for (const m of mutations) {
+        const added = [...m.addedNodes];
+        const relevant = added.some(n => {
+          if (!(n && n.nodeType === 1)) return false;
+          if (n.classList && n.classList.contains(TRAD_CLASS)) return false;
+          if (n.classList && n.classList.contains(TRAD_Q_CLASS)) return false;
+          if (n.closest && n.closest('.tu-root')) return false;
+          return true;
+        });
+        if (relevant) { scheduleRun(true); return; }
+      }
+    });
+    const root = document.body || document.documentElement;
+    try { qcmObserver.observe(root, { childList: true, subtree: true }); } catch {}
+
+    // Premier run différé pour laisser la page se stabiliser
+    setTimeout(() => translateQcm({ silent: false }).catch(() => {}), 500);
+  }
+
+  function stopQcmAuto() {
+    if (qcmObserver) { try { qcmObserver.disconnect(); } catch {} qcmObserver = null; }
+    clearTimeout(qcmDebounce);
   }
 
   /* =========================================================
@@ -610,6 +803,28 @@
      ========================================================= */
   let widget = null;
   let subtitleEngine = null;
+  const WIDGET_STATE_KEY = 'tuAudioWidget'; // position, taille font, minimisé, historique visible
+
+  const WIDGET_DEFAULTS = {
+    left: null, top: null,       // null → bottom-right par défaut
+    minimized: false,
+    fontSize: 14,                // px, valeur baseline
+    showHistory: true,
+    tabGain: 1.0,                // multiplicateur d'amplification de l'audio onglet
+    showHelp: false,
+  };
+  let widgetUI = { ...WIDGET_DEFAULTS };
+
+  function saveWidgetState(patch) {
+    Object.assign(widgetUI, patch || {});
+    try { chrome.storage.local.set({ [WIDGET_STATE_KEY]: widgetUI }); } catch {}
+  }
+  async function loadWidgetState() {
+    try {
+      const s = await new Promise(res => chrome.storage.local.get([WIDGET_STATE_KEY], res));
+      widgetUI = { ...WIDGET_DEFAULTS, ...(s?.[WIDGET_STATE_KEY] || {}) };
+    } catch {}
+  }
 
   function buildWidget() {
     if (widget) return widget;
@@ -618,19 +833,23 @@
       <div class="tu-head">
         <div class="tu-title">
           <span class="tu-rec-dot"></span>
-          <strong>Live Subtitles</strong>
+          <strong>Live Audio</strong>
           <span class="tu-muted tu-small tu-status">en attente…</span>
         </div>
         <div class="tu-head-btns">
-          <button class="tu-mini-btn tu-btn-min"   title="Réduire">—</button>
-          <button class="tu-mini-btn tu-btn-close" title="Fermer">✕</button>
+          <button class="tu-mini-btn tu-btn-help"      title="Aide / conseils pour un test d'anglais">?</button>
+          <button class="tu-mini-btn tu-btn-font-down" title="Texte plus petit">A−</button>
+          <button class="tu-mini-btn tu-btn-font-up"   title="Texte plus grand">A+</button>
+          <button class="tu-mini-btn tu-btn-min"       title="Réduire">—</button>
+          <button class="tu-mini-btn tu-btn-close"     title="Fermer">✕</button>
         </div>
       </div>
       <div class="tu-body">
         <div class="tu-line">
           <span class="tu-flag tu-flag-src">🌍</span>
           <span class="tu-muted tu-small">Original</span>
-          <p class="tu-orig tu-muted">En attente d'une source audio…</p>
+          <span class="tu-muted tu-small tu-src-label"></span>
+          <p class="tu-orig tu-muted">Capture en cours — lance un audio sur la page.</p>
         </div>
         <div class="tu-divider"></div>
         <div class="tu-line">
@@ -638,14 +857,64 @@
           <span class="tu-muted tu-small">Traduction</span>
           <p class="tu-trad tu-muted">—</p>
         </div>
+
+        <div class="tu-gain-row">
+          <span class="tu-muted tu-small">🔊 Boost</span>
+          <input class="tu-gain" type="range" min="0" max="3" step="0.1" value="1" title="Amplification de l'audio onglet"/>
+          <span class="tu-gain-val tu-muted tu-small">1.0×</span>
+        </div>
+        <div class="tu-level"><div class="tu-level-bar"></div></div>
+
+        <div class="tu-help" hidden>
+          <div class="tu-help-title">🎯 Conseils test d'anglais</div>
+          <ul>
+            <li>Clique le widget, la capture démarre automatiquement sur l'audio de cet onglet (pas besoin d'activer les sous-titres).</li>
+            <li>La transcription utilise <b>l'entrée audio système</b> (micro par défaut).</li>
+            <li>🎧 <b>Casque / écouteurs</b> : active <b>Stereo Mix</b> (Windows) ou <b>Loopback/BlackHole</b> (Mac) comme entrée par défaut pour transcrire sans passer par le micro.</li>
+            <li>🔊 <b>Haut-parleurs</b> : monte le boost et laisse le micro intégré faire le travail.</li>
+            <li>Si ça ne capte pas, change la source avec 📡.</li>
+          </ul>
+        </div>
+
+        <div class="tu-history" hidden></div>
       </div>
       <div class="tu-foot">
-        <button class="tu-mini-btn tu-btn-source" title="Changer la source">📡 Source</button>
-        <button class="tu-mini-btn tu-btn-pause">⏸️ Pause</button>
-        <button class="tu-mini-btn tu-btn-export">💾 Export</button>
+        <button class="tu-mini-btn tu-btn-source"  title="Changer la source (auto / tab / mic / sous-titres…)">📡 Source</button>
+        <button class="tu-mini-btn tu-btn-pause"   title="Pause">⏸️</button>
+        <button class="tu-mini-btn tu-btn-history" title="Historique">📜</button>
+        <button class="tu-mini-btn tu-btn-export"  title="Export TXT">💾 TXT</button>
+        <button class="tu-mini-btn tu-btn-export-srt" title="Export SRT">🎬 SRT</button>
       </div>
     `;
     document.documentElement.appendChild(widget);
+
+    // Applique les préférences persistantes
+    if (widgetUI.left != null && widgetUI.top != null) {
+      widget.style.left  = widgetUI.left  + 'px';
+      widget.style.top   = widgetUI.top   + 'px';
+      widget.style.right = 'auto'; widget.style.bottom = 'auto';
+    }
+    if (widgetUI.minimized) widget.classList.add('tu-min');
+    widget.style.setProperty('--tu-font-size', (widgetUI.fontSize || 14) + 'px');
+    const history = widget.querySelector('.tu-history');
+    if (history && !widgetUI.showHistory) history.hidden = true;
+    const helpEl = widget.querySelector('.tu-help');
+    if (helpEl && widgetUI.showHelp) helpEl.hidden = false;
+    // Slider de gain
+    const gainSlider = widget.querySelector('.tu-gain');
+    const gainVal    = widget.querySelector('.tu-gain-val');
+    if (gainSlider && gainVal) {
+      const initGain = Number(widgetUI.tabGain);
+      const g = Number.isFinite(initGain) ? initGain : 1.0;
+      gainSlider.value = String(g);
+      gainVal.textContent = g.toFixed(1) + '×';
+      gainSlider.addEventListener('input', () => {
+        const v = parseFloat(gainSlider.value) || 1;
+        gainVal.textContent = v.toFixed(1) + '×';
+        saveWidgetState({ tabGain: v });
+        if (subtitleEngine?.setTabGain) subtitleEngine.setTabGain(v);
+      });
+    }
 
     /* Drag */
     const head = widget.querySelector('.tu-head');
@@ -660,23 +929,48 @@
       if (!drag) return;
       const x = e.clientX - drag.dx;
       const y = e.clientY - drag.dy;
-      widget.style.left   = Math.min(Math.max(8, x), window.innerWidth  - widget.offsetWidth  - 8) + 'px';
-      widget.style.top    = Math.min(Math.max(8, y), window.innerHeight - widget.offsetHeight - 8) + 'px';
+      const nx = Math.min(Math.max(8, x), window.innerWidth  - widget.offsetWidth  - 8);
+      const ny = Math.min(Math.max(8, y), window.innerHeight - widget.offsetHeight - 8);
+      widget.style.left   = nx + 'px';
+      widget.style.top    = ny + 'px';
       widget.style.right  = 'auto'; widget.style.bottom = 'auto';
     });
-    document.addEventListener('mouseup', () => { drag = null; });
+    document.addEventListener('mouseup', () => {
+      if (drag) {
+        const r = widget.getBoundingClientRect();
+        saveWidgetState({ left: Math.round(r.left), top: Math.round(r.top) });
+      }
+      drag = null;
+    });
 
-    widget.querySelector('.tu-btn-min').addEventListener('click', () => widget.classList.toggle('tu-min'));
+    widget.querySelector('.tu-btn-min').addEventListener('click', () => {
+      widget.classList.toggle('tu-min');
+      saveWidgetState({ minimized: widget.classList.contains('tu-min') });
+    });
     widget.querySelector('.tu-btn-close').addEventListener('click', () => {
       stopAudio();
       chrome.storage.sync.set({ audio: false });
+    });
+
+    widget.querySelector('.tu-btn-font-up').addEventListener('click', () => {
+      const cur = parseFloat(getComputedStyle(widget).getPropertyValue('--tu-font-size')) || 14;
+      const next = Math.min(28, cur + 2);
+      widget.style.setProperty('--tu-font-size', next + 'px');
+      saveWidgetState({ fontSize: next });
+    });
+    widget.querySelector('.tu-btn-font-down').addEventListener('click', () => {
+      const cur = parseFloat(getComputedStyle(widget).getPropertyValue('--tu-font-size')) || 14;
+      const next = Math.max(11, cur - 2);
+      widget.style.setProperty('--tu-font-size', next + 'px');
+      saveWidgetState({ fontSize: next });
     });
 
     let paused = false;
     const pauseBtn = widget.querySelector('.tu-btn-pause');
     pauseBtn.addEventListener('click', () => {
       paused = !paused;
-      pauseBtn.textContent = paused ? '▶️ Reprendre' : '⏸️ Pause';
+      pauseBtn.textContent = paused ? '▶️' : '⏸️';
+      pauseBtn.title = paused ? 'Reprendre' : 'Pause';
       if (subtitleEngine) subtitleEngine.paused = paused;
     });
 
@@ -685,21 +979,92 @@
       subtitleEngine.cycleSource();
     });
 
+    widget.querySelector('.tu-btn-history').addEventListener('click', () => {
+      const h = widget.querySelector('.tu-history');
+      h.hidden = !h.hidden;
+      saveWidgetState({ showHistory: !h.hidden });
+      if (!h.hidden) renderHistoryList();
+    });
+
+    widget.querySelector('.tu-btn-help').addEventListener('click', () => {
+      const h = widget.querySelector('.tu-help');
+      h.hidden = !h.hidden;
+      saveWidgetState({ showHelp: !h.hidden });
+    });
+
     widget.querySelector('.tu-btn-export').addEventListener('click', () => {
       const log = subtitleEngine?.log || [];
       const txt = log.map(e => `[${e.t}]\n${e.src}\n→ ${e.trad}\n`).join('\n');
-      const blob = new Blob([txt || '(aucun sous-titre)'], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = el('a'); a.href = url; a.download = 'subtitles.txt'; a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      toast('Export téléchargé');
+      downloadBlob(txt || '(aucun sous-titre)', 'subtitles.txt', 'text/plain;charset=utf-8');
+      toast('Export TXT téléchargé');
+    });
+    widget.querySelector('.tu-btn-export-srt').addEventListener('click', () => {
+      const log = subtitleEngine?.log || [];
+      if (!log.length) { toast('Aucun sous-titre à exporter'); return; }
+      downloadBlob(buildSrt(log), 'subtitles.srt', 'text/plain;charset=utf-8');
+      toast('Export SRT téléchargé');
     });
 
     return widget;
   }
 
+  function downloadBlob(content, filename, mime) {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = el('a'); a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function buildSrt(log) {
+    const fmt = (ms) => {
+      const s = Math.floor(ms / 1000);
+      const h = String(Math.floor(s / 3600)).padStart(2, '0');
+      const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+      const sec = String(s % 60).padStart(2, '0');
+      const mss = String(ms % 1000).padStart(3, '0');
+      return `${h}:${m}:${sec},${mss}`;
+    };
+    // Si on a des ms absolus, on les utilise ; sinon on répartit 3 s par item
+    const hasMs = log.every(e => typeof e.ms === 'number');
+    const t0 = hasMs ? log[0].ms : 0;
+    const lines = [];
+    log.forEach((e, i) => {
+      const start = hasMs ? (e.ms - t0) : (i * 3000);
+      const end   = hasMs ? (log[i + 1] ? log[i + 1].ms - t0 : start + 3000) : (start + 3000);
+      lines.push(
+        String(i + 1),
+        `${fmt(start)} --> ${fmt(end)}`,
+        e.src || '',
+        e.trad ? e.trad : '',
+        ''
+      );
+    });
+    return lines.join('\n');
+  }
+
+  function renderHistoryList() {
+    const h = widget?.querySelector('.tu-history');
+    if (!h || !subtitleEngine) return;
+    const lastN = subtitleEngine.log.slice(-6);
+    h.innerHTML = lastN.map(e => `
+      <div class="tu-hist-item">
+        <div class="tu-hist-time">${e.t}</div>
+        <div class="tu-hist-src">${escapeHtml(e.src)}</div>
+        <div class="tu-hist-trad">${escapeHtml(e.trad || '')}</div>
+      </div>
+    `).join('') || '<div class="tu-muted tu-small">Historique vide</div>';
+    h.scrollTop = h.scrollHeight;
+  }
+
+  function escapeHtml(s) {
+    return (s || '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+  }
+
   function setStatus(txt) {
     const s = widget?.querySelector('.tu-status'); if (s) s.textContent = txt;
+  }
+  function setSourceLabel(txt) {
+    const s = widget?.querySelector('.tu-src-label'); if (s) s.textContent = txt ? '· ' + txt : '';
   }
   function setOrig(text, langCode) {
     if (!widget) return;
@@ -726,24 +1091,70 @@
   }
 
   /* =========================================================
-     SubtitleEngine — captures réelles
+     SubtitleEngine — capture AUDIO de l'onglet (priorité)
+     - PRIORITÉ : capture directe de l'audio de l'onglet via chrome.tabCapture
+       → amplification + lecture audible (Web Audio API)
+       → transcription via l'entrée audio par défaut du système
+         (micro OU Stereo Mix / Loopback pour les utilisateurs casque)
+     - Micro seul (fallback)
+     - Sous-titres (opt-in via cycleSource) : HTML5 tracks, YouTube,
+       Netflix, Vimeo, Twitch, video.js, Shaka, JW, Plyr
      ========================================================= */
   class SubtitleEngine {
     constructor() {
       this.log = [];
       this.paused = false;
       this.lastText = '';
-      this.sourceMode = 'auto'; // 'auto' | 'video' | 'youtube' | 'mic'
+      // Modes : 'auto' (tab + mic), 'tab', 'mic', 'video', 'youtube', 'netflix', 'vimeo', 'twitch', 'generic'
+      this.sourceMode = 'auto';
       this.detachers = [];
       this.detectedLang = state.langFrom !== 'auto' ? state.langFrom : 'en';
+
+      // Sentence coalescing
+      this.coalesceBuf = '';
+      this.coalesceTimer = null;
+      this.coalesceSrcLang = 'auto';
+
+      this.micRetries = 0;
+      this.micRetryTimer = null;
+
+      // Tab audio
+      this.tabStream = null;
+      this.audioCtx  = null;
+      this.tabGain   = null;
+      this.tabAnalyser = null;
+      this.levelRAF  = null;
     }
 
-    start() {
+    async start() {
       this.stop();
-      // Essai par priorité : vidéo → YouTube → micro
-      if (this.tryVideoTracks()) return;
-      if (this.tryYouTubeCaptions()) return;
+      if (this.sourceMode === 'auto') {
+        // On tente d'abord de capturer l'audio de l'onglet (pour amplifier + route audible)
+        const tabOk = await this.try_tab();
+        // Dans tous les cas, on lance la reconnaissance sur l'entrée audio système
+        this.startMicRecognition();
+        setSourceLabel(tabOk ? 'tab+mic' : 'mic');
+        return;
+      }
+      if (this.sourceMode === 'tab') {
+        const ok = await this.try_tab();
+        this.startMicRecognition();
+        setSourceLabel(ok ? 'tab+mic' : 'mic');
+        return;
+      }
+      if (this.sourceMode === 'mic') {
+        this.startMicRecognition();
+        setSourceLabel('mic');
+        return;
+      }
+      // Modes sous-titres (opt-in)
+      if (this[`try_${this.sourceMode}`] && this[`try_${this.sourceMode}`]()) {
+        setSourceLabel(this.sourceMode);
+        return;
+      }
+      // Fallback final
       this.startMicRecognition();
+      setSourceLabel('mic');
     }
 
     stop() {
@@ -753,18 +1164,112 @@
         try { this.recognition.onend = null; this.recognition.stop(); } catch {}
         this.recognition = null;
       }
+      if (this.levelRAF) { cancelAnimationFrame(this.levelRAF); this.levelRAF = null; }
+      if (this.tabStream) {
+        try { this.tabStream.getTracks().forEach(t => t.stop()); } catch {}
+        this.tabStream = null;
+      }
+      if (this.audioCtx) {
+        try { this.audioCtx.close(); } catch {}
+        this.audioCtx = null;
+      }
+      this.tabGain = null; this.tabAnalyser = null;
+      clearTimeout(this.coalesceTimer); this.coalesceTimer = null;
+      clearTimeout(this.micRetryTimer); this.micRetryTimer = null;
+      this.coalesceBuf = '';
+      this.micRetries = 0;
     }
 
     cycleSource() {
-      const order = ['auto', 'video', 'youtube', 'mic'];
+      const order = ['auto', 'tab', 'mic', 'video', 'youtube', 'netflix', 'vimeo', 'twitch', 'generic'];
       const idx = order.indexOf(this.sourceMode);
       this.sourceMode = order[(idx + 1) % order.length];
       toast('Source : ' + this.sourceMode);
       this.start();
     }
 
-    tryVideoTracks() {
-      if (this.sourceMode !== 'auto' && this.sourceMode !== 'video') return false;
+    setTabGain(v) {
+      if (this.tabGain) {
+        try { this.tabGain.gain.value = Math.max(0, Math.min(4, Number(v) || 1)); } catch {}
+      }
+    }
+
+    /* --- Capture audio de l'onglet : chrome.tabCapture + Web Audio ---
+       Fait DEUX choses :
+       1) Reste audible pour l'utilisateur (route vers destination)
+       2) Expose un AnalyserNode pour l'indicateur de niveau
+       La TRANSCRIPTION, elle, passe par l'entrée audio système
+       (webkitSpeechRecognition ne sait pas consommer un stream custom).
+       → Pour un usage casque : activer "Stereo Mix" (Win) ou "Loopback" (Mac). */
+    async try_tab() {
+      try {
+        const res = await sendBG({ type: 'GET_TAB_STREAM_ID' });
+        if (!res?.ok || !res.streamId) {
+          setStatus('capture onglet indisponible (' + (res?.error || 'inconnu') + ')');
+          return false;
+        }
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            mandatory: {
+              chromeMediaSource:  'tab',
+              chromeMediaSourceId: res.streamId,
+            }
+          },
+          video: false,
+        });
+        this.tabStream = stream;
+
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        const ctx = new Ctx();
+        const src = ctx.createMediaStreamSource(stream);
+        const gain = ctx.createGain();
+        gain.gain.value = 1.0;
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 1024;
+
+        // src → gain → destination (audible) ET → analyser (meter)
+        src.connect(gain);
+        gain.connect(ctx.destination);
+        src.connect(analyser);
+
+        this.audioCtx = ctx;
+        this.tabGain = gain;
+        this.tabAnalyser = analyser;
+
+        this.startLevelMeter();
+        setStatus('🎧 audio onglet capturé — amplification active');
+        return true;
+      } catch (err) {
+        console.warn('TU: tab capture failed', err);
+        setStatus('capture onglet refusée/indisponible');
+        return false;
+      }
+    }
+
+    startLevelMeter() {
+      const meter = widget?.querySelector('.tu-level-bar');
+      if (!meter || !this.tabAnalyser) return;
+      const buf = new Uint8Array(this.tabAnalyser.frequencyBinCount);
+      const loop = () => {
+        if (!this.tabAnalyser || !meter.isConnected) return;
+        this.tabAnalyser.getByteTimeDomainData(buf);
+        // RMS normalisé 0..1
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) {
+          const v = (buf[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / buf.length);
+        const pct = Math.min(100, Math.round(rms * 220)); // amplifie visuellement
+        meter.style.width = pct + '%';
+        meter.classList.toggle('tu-level-hot', pct > 75);
+        this.levelRAF = requestAnimationFrame(loop);
+      };
+      this.levelRAF = requestAnimationFrame(loop);
+    }
+
+    /* --- Tracks HTML5 natifs --- */
+    try_video() {
       const videos = Array.from(document.querySelectorAll('video'));
       let activated = false;
       for (const v of videos) {
@@ -785,52 +1290,110 @@
           activated = true;
         }
       }
-      if (activated) {
-        setStatus('sous-titres vidéo détectés');
-        return true;
+      if (activated) { setStatus('sous-titres vidéo détectés'); return true; }
+      return false;
+    }
+
+    /* --- YouTube --- */
+    try_youtube() {
+      if (!/(^|\.)youtube\.com$/.test(location.hostname)) return false;
+      return this._attachDomCaptions(
+        () => document.querySelector('.ytp-caption-window-container') || document.querySelector('.caption-window'),
+        '.ytp-caption-segment, .captions-text span',
+        'sous-titres YouTube actifs',
+        'en attente des sous-titres YouTube… (activez les CC)'
+      );
+    }
+
+    /* --- Netflix --- */
+    try_netflix() {
+      if (!/(^|\.)netflix\.com$/.test(location.hostname)) return false;
+      return this._attachDomCaptions(
+        () => document.querySelector('.player-timedtext'),
+        '.player-timedtext-text-container span, .player-timedtext span',
+        'sous-titres Netflix actifs',
+        'activez les sous-titres Netflix…'
+      );
+    }
+
+    /* --- Vimeo --- */
+    try_vimeo() {
+      if (!/(^|\.)vimeo\.com$/.test(location.hostname)) return false;
+      return this._attachDomCaptions(
+        () => document.querySelector('.vp-captions') || document.querySelector('[class*="CaptionsRenderer"]'),
+        '.vp-captions-line, .vp-captions span, [class*="CaptionsRenderer"] span',
+        'sous-titres Vimeo actifs',
+        'activez les CC Vimeo…'
+      );
+    }
+
+    /* --- Twitch --- */
+    try_twitch() {
+      if (!/(^|\.)twitch\.tv$/.test(location.hostname)) return false;
+      return this._attachDomCaptions(
+        () => document.querySelector('.player-captions-container') || document.querySelector('.tw-captions'),
+        '.player-captions-container span, .player-captions-container p',
+        'sous-titres Twitch actifs',
+        'activez les CC Twitch…'
+      );
+    }
+
+    /* --- Players génériques (video.js, Shaka, JW, Plyr) --- */
+    try_generic() {
+      const selectors = [
+        '.vjs-text-track-display',              // video.js
+        '.shaka-text-container',                // Shaka Player
+        '.jw-captions',                         // JW Player
+        '.plyr__captions',                      // Plyr
+        '[aria-label="captions"]',
+      ];
+      for (const sel of selectors) {
+        const n = document.querySelector(sel);
+        if (n) {
+          return this._attachDomCaptions(
+            () => document.querySelector(sel),
+            sel + ' div, ' + sel + ' span, ' + sel + ' p',
+            'sous-titres détectés (' + sel + ')',
+            null
+          );
+        }
       }
       return false;
     }
 
-    tryYouTubeCaptions() {
-      if (this.sourceMode !== 'auto' && this.sourceMode !== 'youtube') return false;
-      if (!/(^|\.)youtube\.com$/.test(location.hostname)) return false;
-
-      const getContainer = () => document.querySelector('.ytp-caption-window-container')
-                              || document.querySelector('.caption-window');
-
+    /* Helper mutualisé */
+    _attachDomCaptions(getContainer, innerSel, activeMsg, waitingMsg) {
       const attach = (container) => {
-        const mo = new MutationObserver(() => {
-          const segs = container.querySelectorAll('.ytp-caption-segment, .captions-text span');
-          const text = Array.from(segs).map(s => s.textContent).join(' ').trim();
-          if (text) this.handleCaption(text, 'auto');
-        });
+        let lastEmit = '';
+        const emit = () => {
+          const segs = container.querySelectorAll(innerSel);
+          const text = Array.from(segs).map(s => s.textContent).join(' ').replace(/\s+/g, ' ').trim();
+          if (text && text !== lastEmit) {
+            lastEmit = text;
+            this.handleCaption(text, 'auto');
+          }
+        };
+        const mo = new MutationObserver(emit);
         mo.observe(container, { childList: true, subtree: true, characterData: true });
         this.detachers.push(() => mo.disconnect());
+        emit();
       };
 
       const existing = getContainer();
-      if (existing) {
-        attach(existing);
-        setStatus('sous-titres YouTube actifs');
-        return true;
-      }
+      if (existing) { attach(existing); setStatus(activeMsg); return true; }
+      if (!waitingMsg) return false;
 
-      // Attend l'apparition du conteneur (ex: CC activé après coup)
       const rootObs = new MutationObserver(() => {
         const c = getContainer();
-        if (c) {
-          attach(c);
-          setStatus('sous-titres YouTube actifs');
-          rootObs.disconnect();
-        }
+        if (c) { attach(c); setStatus(activeMsg); rootObs.disconnect(); }
       });
       rootObs.observe(document.body, { childList: true, subtree: true });
       this.detachers.push(() => rootObs.disconnect());
-      setStatus('en attente des sous-titres YouTube… (activez les CC)');
+      setStatus(waitingMsg);
       return true;
     }
 
+    /* --- Micro --- */
     startMicRecognition() {
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SR) {
@@ -845,34 +1408,41 @@
 
       let lastFinal = '';
       r.onresult = (e) => {
+        this.micRetries = 0; // reset backoff après un result
         let interim = '', final = '';
         for (let i = e.resultIndex; i < e.results.length; i++) {
           const res = e.results[i];
           if (res.isFinal) final += res[0].transcript;
           else interim += res[0].transcript;
         }
-        const text = (final || interim).trim();
-        if (!text) return;
-        if (final && final !== lastFinal) {
-          lastFinal = final;
-          this.handleCaption(final.trim(), state.langFrom === 'auto' ? 'en' : state.langFrom);
+        const srcLang = state.langFrom === 'auto' ? 'en' : state.langFrom;
+        if (final) {
+          const clean = final.trim();
+          if (clean && clean !== lastFinal) {
+            lastFinal = clean;
+            this.feedCoalescer(clean, srcLang);
+          }
         } else if (interim) {
-          setOrig(text + ' …', state.langFrom === 'auto' ? 'en' : state.langFrom);
+          const t = interim.trim();
+          if (t) setOrig(t + ' …', srcLang);
         }
       };
       r.onerror = (e) => {
         if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
           setStatus('micro refusé');
           setOrig('⚠️ Autorisez le microphone pour la capture audio.', 'auto');
-        } else {
-          setStatus('erreur : ' + e.error);
+          return;
         }
+        setStatus('erreur : ' + e.error);
       };
       r.onend = () => {
-        // Relance automatique tant que l'audio est actif
-        if (state.audio && !this.paused) {
+        if (!state.audio || this.paused) return;
+        // Relance avec backoff exponentiel en cas d'échecs répétés
+        this.micRetries = Math.min(this.micRetries + 1, 6);
+        const delay = Math.min(200 * Math.pow(1.7, this.micRetries - 1), 4000);
+        this.micRetryTimer = setTimeout(() => {
           try { r.start(); } catch {}
-        }
+        }, delay);
       };
       try {
         r.start();
@@ -882,6 +1452,33 @@
         setStatus('impossible de démarrer');
       }
       this.recognition = r;
+    }
+
+    /* --- Sentence coalescer ---
+       Plutôt que traduire chaque fragment, on regroupe jusqu'à :
+       - un point / ? / ! (fin de phrase)
+       - ou 800 ms sans nouveau fragment
+       → traduction plus fluide et contextuelle. */
+    feedCoalescer(fragment, srcLang) {
+      this.coalesceSrcLang = srcLang || this.coalesceSrcLang || 'auto';
+      const joined = (this.coalesceBuf + ' ' + fragment).trim();
+      this.coalesceBuf = joined;
+      setOrig(joined, this.coalesceSrcLang);
+
+      clearTimeout(this.coalesceTimer);
+      const endsSentence = /[.?!…](\s|$)|[。！？]$/.test(joined);
+      const flush = () => {
+        const text = this.coalesceBuf.trim();
+        this.coalesceBuf = '';
+        this.coalesceTimer = null;
+        if (text) this.handleCaption(text, this.coalesceSrcLang);
+      };
+      if (endsSentence && joined.length >= 4) {
+        // Flush rapide
+        this.coalesceTimer = setTimeout(flush, 120);
+      } else {
+        this.coalesceTimer = setTimeout(flush, 800);
+      }
     }
 
     async handleCaption(rawText, sourceLang) {
@@ -900,24 +1497,69 @@
         setTrad(translated || '—', state.langTo);
         this.log.push({
           t: new Date().toISOString().slice(11, 19),
+          ms: Date.now(),
           src: text,
           trad: translated || '',
+          lang: detected || sourceLang || '',
         });
         if (this.log.length > 500) this.log.splice(0, this.log.length - 500);
+        renderHistoryList();
       } catch {
         setTrad('⚠️ traduction indisponible', state.langTo);
       }
     }
   }
 
-  function startAudio() {
-    buildWidget();
-    if (!subtitleEngine) subtitleEngine = new SubtitleEngine();
-    subtitleEngine.start();
+  let audioStarting = false;
+  async function startAudio() {
+    // Idempotent : si le widget tourne déjà, on ne relance pas
+    if (audioStarting) return;
+    if (widget && subtitleEngine) return;
+    audioStarting = true;
+    try {
+      await loadWidgetState();
+      buildWidget();
+      clampWidgetToViewport();
+      if (!subtitleEngine) subtitleEngine = new SubtitleEngine();
+      await subtitleEngine.start();
+      subtitleEngine.setTabGain(widgetUI.tabGain ?? 1.0);
+      window.addEventListener('resize', clampWidgetToViewport, { passive: true });
+    } catch (err) {
+      console.warn('TU: startAudio failed', err);
+      // Ne laisse PAS l'utilisateur sans widget
+      if (!widget) buildWidget();
+      setStatus('⚠️ erreur audio : ' + (err?.message || err));
+    } finally {
+      audioStarting = false;
+    }
+  }
+  function clampWidgetToViewport() {
+    if (!widget) return;
+    const r = widget.getBoundingClientRect();
+    // Si le widget est partiellement ou totalement hors écran, on le repose en bas-droite
+    const outRight  = r.left > window.innerWidth  - 20;
+    const outBottom = r.top  > window.innerHeight - 20;
+    const outLeft   = r.right < 20;
+    const outTop    = r.bottom < 20;
+    if (outRight || outBottom || outLeft || outTop) {
+      widget.style.left = 'auto';
+      widget.style.top  = 'auto';
+      widget.style.right = '24px';
+      widget.style.bottom = '24px';
+      saveWidgetState({ left: null, top: null });
+      return;
+    }
+    const maxLeft = window.innerWidth  - widget.offsetWidth  - 8;
+    const maxTop  = window.innerHeight - widget.offsetHeight - 8;
+    let changed = false;
+    if (r.left > maxLeft) { widget.style.left = Math.max(8, maxLeft) + 'px'; changed = true; }
+    if (r.top  > maxTop)  { widget.style.top  = Math.max(8, maxTop)  + 'px'; changed = true; }
+    if (changed) saveWidgetState({ left: parseInt(widget.style.left, 10), top: parseInt(widget.style.top, 10) });
   }
   function stopAudio() {
     if (subtitleEngine) { subtitleEngine.stop(); subtitleEngine = null; }
     removeEl(widget); widget = null;
+    window.removeEventListener('resize', clampWidgetToViewport);
   }
 
   /* =========================================================
@@ -926,6 +1568,9 @@
   function applyState() {
     if (state.audio) startAudio();
     else stopAudio();
+
+    if (state.qcm) startQcmAuto();
+    else stopQcmAuto();
 
     if (!state.selection) hideTooltip();
   }
@@ -959,7 +1604,8 @@
       return;
     }
     if (msg.type === 'CLEAR_CACHE') {
-      try { QCM_CACHE.clear(); } catch {}
+      try { QCM_CACHE.clear(); QCM_MISS.clear(); } catch {}
+      try { chrome.storage.local.remove(PERSIST_KEY); } catch {}
       toast('Cache vidé');
       return;
     }
