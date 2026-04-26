@@ -646,9 +646,32 @@ html, body {
 /* Statistics */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
 }
+
+/* ---------- Heatmap d'activité 30 jours ---------- */
+.heatmap {
+  display: grid;
+  grid-template-columns: repeat(15, 1fr);
+  gap: 3px;
+  margin-top: 4px;
+}
+.heatmap-cell {
+  aspect-ratio: 1 / 1;
+  border-radius: 3px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.04);
+  transition: transform 120ms;
+  cursor: default;
+}
+.heatmap-cell:hover { transform: scale(1.4); }
+.heatmap-cell.lvl-0 { background: rgba(255,255,255,0.06); }
+.heatmap-cell.lvl-1 { background: rgba(124,92,255,0.25); }
+.heatmap-cell.lvl-2 { background: rgba(124,92,255,0.45); }
+.heatmap-cell.lvl-3 { background: rgba(124,92,255,0.7); }
+.heatmap-cell.lvl-4 { background: rgba(124,92,255,1); }
+.heatmap-cell.is-today { box-shadow: 0 0 0 1.5px rgba(255,255,255,0.6); }
 .stat-card {
   padding: 12px 6px;
   text-align: center;

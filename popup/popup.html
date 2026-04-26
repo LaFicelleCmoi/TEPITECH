@@ -21,6 +21,7 @@
         <span class="popup-title">Traducteur Universel</span>
       </div>
       <div class="popup-header-actions">
+        <button class="pill-btn" id="btnSidePanel" title="Ouvrir le side panel (mode test)">📑</button>
         <button class="pill-btn" id="btnSettings" title="Paramètres">⚙️</button>
         <button class="pill-btn" id="btnProfile"  title="Profil">👤</button>
       </div>
@@ -67,23 +68,47 @@
         </div>
       </div>
 
-      <div class="toggle-row action-row-qcm">
-        <div class="toggle-info">
+      <div class="toggle-row" style="display:block">
+        <div class="toggle-info" style="margin-bottom:10px">
           <span class="toggle-icon">🎙️</span>
           <div>
-            <div class="toggle-label">Capture Audio Live</div>
-            <div class="toggle-sub">Audio de l'onglet en direct</div>
+            <div class="toggle-label">Sous-titres audio en direct</div>
+            <div class="toggle-sub" id="lcSub">Utilisez la fonction native du navigateur</div>
           </div>
         </div>
-        <div class="qcm-actions">
-          <label class="qcm-auto" title="Démarrer automatiquement sur chaque page">
-            <span class="qcm-auto-label">Auto</span>
-            <span class="switch switch-sm">
-              <input type="checkbox" id="tgAudio" />
-              <span class="slider"></span>
-            </span>
-          </label>
-          <button class="action-btn" id="btnAudio" title="Lancer la capture audio sur cet onglet">Écouter</button>
+        <div class="live-caption-guide muted small" style="line-height:1.55">
+          Pour transcrire l'audio d'un test d'anglais (Tepitech, TOEIC…) en
+          temps réel, ton navigateur (Chrome, Brave ou Edge) intègre les
+          <b>"Sous-titres instantanés"</b> — plus fiable et plus rapide que n'importe quelle solution WASM.
+
+          <div style="margin-top:10px;padding:8px;background:rgba(124,92,255,.06);border-radius:8px">
+            <b>Étapes</b>
+            <ol style="margin:4px 0 0 0;padding-left:18px">
+              <li>Copiez l'adresse des réglages d'accessibilité (bouton ci-dessous) et collez-la dans la barre d'adresse :
+                <ul style="margin:4px 0 0 0;padding-left:16px">
+                  <li>🟢 <b>Chrome</b> : <code style="user-select:all">chrome://settings/accessibility</code></li>
+                  <li>🦁 <b>Brave</b> : <code style="user-select:all">brave://settings/accessibility</code></li>
+                  <li>🔵 <b>Edge</b> : <code style="user-select:all">edge://settings/accessibility</code></li>
+                </ul>
+              </li>
+              <li>Activez <b>"Sous-titres instantanés"</b> (Live Caption)</li>
+              <li>Le navigateur télécharge le modèle anglais une seule fois (~30 Mo, ~1 min)</li>
+              <li>Lancez l'audio : une bulle flottante affiche la transcription</li>
+            </ol>
+          </div>
+
+          <div style="margin-top:10px;font-size:11.5px">
+            <b>Brave</b> : si l'option n'apparaît pas, va dans
+            <code style="user-select:all">brave://flags</code> et active
+            <b>"Live Caption"</b> + relance le navigateur.
+          </div>
+
+          <div style="margin-top:10px">
+            Besoin de traduire un mot ? Sélectionnez-le sur la page ou tapez-le ci-dessous — notre traducteur fait le reste.
+          </div>
+          <button class="ghost-btn" id="btnOpenLiveCaption" style="margin-top:10px;width:100%">
+            📋 Copier l'adresse des réglages
+          </button>
         </div>
       </div>
     </section>
@@ -210,6 +235,64 @@
           </label>
           <input type="range" id="settHoverDelay" min="150" max="1200" step="50" value="450" />
         </div>
+        <label class="toggle-row">
+          <div class="toggle-info">
+            <span class="toggle-icon">🔡</span>
+            <div>
+              <div class="toggle-label">Phonétique (IPA)</div>
+              <div class="toggle-sub">Affiche la prononciation dans le tooltip</div>
+            </div>
+          </div>
+          <span class="switch">
+            <input type="checkbox" id="settIpa" checked />
+            <span class="slider"></span>
+          </span>
+        </label>
+        <label class="toggle-row">
+          <div class="toggle-info">
+            <span class="toggle-icon">🔁</span>
+            <div>
+              <div class="toggle-label">Traductions alternatives</div>
+              <div class="toggle-sub">Affiche les synonymes par classe grammaticale</div>
+            </div>
+          </div>
+          <span class="switch">
+            <input type="checkbox" id="settAlts" checked />
+            <span class="slider"></span>
+          </span>
+        </label>
+      </section>
+
+      <section class="popup-card glass">
+        <div class="popup-card-head">
+          <h3>📝 QCM</h3>
+        </div>
+        <label class="toggle-row">
+          <div class="toggle-info">
+            <span class="toggle-icon">💡</span>
+            <div>
+              <div class="toggle-label">Suggérer la réponse probable</div>
+              <div class="toggle-sub">Heuristique grammaticale — à utiliser en mode étude</div>
+            </div>
+          </div>
+          <span class="switch">
+            <input type="checkbox" id="settQcmHint" checked />
+            <span class="slider"></span>
+          </span>
+        </label>
+        <label class="toggle-row">
+          <div class="toggle-info">
+            <span class="toggle-icon">🔉</span>
+            <div>
+              <div class="toggle-label">Bouton "écouter la phrase"</div>
+              <div class="toggle-sub">TTS de la phrase originale dans le bloc QCM</div>
+            </div>
+          </div>
+          <span class="switch">
+            <input type="checkbox" id="settQcmAudio" checked />
+            <span class="slider"></span>
+          </span>
+        </label>
       </section>
 
       <section class="popup-card glass">
@@ -311,7 +394,16 @@
             <div class="stat-value" id="statDays">0</div>
             <div class="stat-label">jours</div>
           </div>
+          <div class="stat-card">
+            <div class="stat-value" id="statStreak">🔥 0</div>
+            <div class="stat-label">streak</div>
+          </div>
         </div>
+        <div class="popup-card-head" style="margin-top:14px;margin-bottom:6px">
+          <h3 style="font-size:12px">🗓️ 30 derniers jours</h3>
+          <span class="muted small" id="heatmapTotal"></span>
+        </div>
+        <div class="heatmap" id="heatmap" title="Une case = un jour. Plus c'est saturé, plus tu as traduit."></div>
       </section>
 
       <section class="popup-card glass">

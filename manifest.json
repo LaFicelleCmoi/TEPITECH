@@ -9,8 +9,7 @@
     "activeTab",
     "scripting",
     "tts",
-    "tabCapture",
-    "offscreen"
+    "sidePanel"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -37,6 +36,32 @@
   "background": {
     "service_worker": "background.js"
   },
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+T",
+        "mac": "Command+Shift+T"
+      },
+      "description": "Ouvrir le popup Traducteur Universel"
+    },
+    "open-side-panel": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+L",
+        "mac": "Command+Shift+L"
+      },
+      "description": "Ouvrir le side panel de traduction"
+    },
+    "translate-clipboard": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Y",
+        "mac": "Command+Shift+Y"
+      },
+      "description": "Traduire le presse-papier dans le side panel"
+    }
+  },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
@@ -48,7 +73,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["content/*", "icons/*", "lib/*", "offscreen/*"],
+      "resources": ["content/*", "icons/*"],
       "matches": ["<all_urls>"]
     }
   ]

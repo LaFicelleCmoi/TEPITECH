@@ -8,7 +8,6 @@
 const DEFAULTS = {
   selection: true,
   qcm: false,
-  audio: false,
   langFrom: 'auto',
   langTo: 'fr',
 };
@@ -45,24 +44,56 @@ chrome.runtime.onInstalled.addListener(async () => {
       contexts: ['page', 'editable'],
     });
     chrome.contextMenus.create({
-      id: 'tu-start-audio',
+      id: 'tu-translate-side',
       parentId: 'tu-root',
-      title: '🎙️ Lancer l\u2019écoute audio sur cet onglet',
-      contexts: ['page'],
+      title: '📑 Traduire dans le side panel',
+      contexts: ['selection'],
     });
   });
+
+  // Permet à un clic sur l'icône d'ouvrir le side panel sur l'onglet courant.
+  // (default_popup reste prioritaire ; ce flag rend le panneau accessible
+  // via le bouton "Side panels" de Chrome.)
+  try {
+    chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false });
+  } catch {}
 });
 
 /* ---------- Context menu clicks ---------- */
-chrome.contextMenus.onClicked.addListener((info, tab) => {
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (!tab?.id) return;
+
+  // Cas spécial : ouvrir le side panel et y déposer la sélection.
+  // L'API sidePanel.open() exige un user-gesture, et le clic du menu
+  // contextuel en est un — on doit donc l'appeler de façon synchrone.
+  if (info.menuItemId === 'tu-translate-side') {
+    const text = (info.selectionText || '').trim();
+    // Stocker le texte AVANT d'ouvrir, au cas où le side panel se construise
+    // après que le message runtime soit envoyé.
+    try { await chrome.storage.session.set({ spPendingText: text }); } catch {}
+    try {
+      await chrome.sidePanel.open({ tabId: tab.id });
+    } catch (err) {
+      console.warn('TU: sidePanel.open failed', err);
+    }
+    // Broadcast aussi un runtime message pour le cas où le side panel était
+    // déjà ouvert (et n'aura pas relu storage.session).
+    setTimeout(() => {
+      chrome.runtime.sendMessage({
+        type: 'SIDEPANEL_TRANSLATE_SELECTION',
+        text,
+      }).catch(() => {});
+    }, 250);
+    return;
+  }
+
   const map = {
     'tu-translate-selection': 'CTX_TRANSLATE_SELECTION',
     'tu-translate-qcm':       'CTX_TRANSLATE_QCM',
-    'tu-start-audio':         'CTX_START_AUDIO',
   };
   const type = map[info.menuItemId];
   if (!type) return;
+  // (la suite injecte le content script et envoie le message)
 
   chrome.tabs.sendMessage(tab.id, { type, info }).catch(async () => {
     try {
@@ -75,6 +106,50 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   });
 });
 
+/* ---------- Raccourcis clavier (chrome.commands) ----------
+   Les commandes "_execute_action" (ouvrir popup) sont gérées par Chrome
+   automatiquement. On gère ici nos commandes custom :
+     - open-side-panel       (Ctrl+Shift+L)
+     - translate-clipboard   (Ctrl+Shift+Y)
+*/
+if (chrome.commands && chrome.commands.onCommand) {
+  chrome.commands.onCommand.addListener(async (command, tab) => {
+    try {
+      if (command === 'open-side-panel') {
+        const t = tab || (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+        if (t?.windowId) await chrome.sidePanel.open({ windowId: t.windowId });
+        return;
+      }
+      if (command === 'translate-clipboard') {
+        // Le service worker n'a pas accès direct au clipboard ; on demande à
+        // un script injecté dans l'onglet actif de lire navigator.clipboard,
+        // puis on dépose le texte dans le side panel.
+        const t = tab || (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+        if (!t?.id) return;
+        let text = '';
+        try {
+          const [r] = await chrome.scripting.executeScript({
+            target: { tabId: t.id },
+            func: async () => { try { return await navigator.clipboard.readText(); } catch { return ''; } },
+          });
+          text = (r?.result || '').trim();
+        } catch {}
+        if (!text) return;
+        try { await chrome.storage.session.set({ spPendingText: text }); } catch {}
+        try { await chrome.sidePanel.open({ tabId: t.id }); } catch {}
+        setTimeout(() => {
+          chrome.runtime.sendMessage({
+            type: 'SIDEPANEL_TRANSLATE_SELECTION',
+            text,
+          }).catch(() => {});
+        }, 250);
+      }
+    } catch (err) {
+      console.warn('TU: command handler error', command, err);
+    }
+  });
+}
+
 /* =========================================================
    Moteurs de traduction
    ========================================================= */
@@ -83,15 +158,69 @@ function sameText(a, b) {
   return (a || '').trim().toLowerCase() === (b || '').trim().toLowerCase();
 }
 
-/* 1) Google Translate — endpoint public "gtx" */
+/* ---------- Cache LRU en mémoire (persistance soft via storage.local) ---------- */
+const TRANS_CACHE = new Map();         // clé "from|to|text" → result
+const CACHE_MAX = 1000;
+const CACHE_PERSIST_KEY = 'tuTransCacheV1';
+let cacheHydrated = false;
+
+function cacheKey(text, from, to) {
+  return (from || 'auto') + '|' + (to || 'fr') + '|' + (text || '').trim();
+}
+
+async function hydrateCache() {
+  if (cacheHydrated) return;
+  cacheHydrated = true;
+  try {
+    const s = await chrome.storage.local.get(CACHE_PERSIST_KEY);
+    const arr = Array.isArray(s?.[CACHE_PERSIST_KEY]) ? s[CACHE_PERSIST_KEY] : [];
+    for (const [k, v] of arr) TRANS_CACHE.set(k, v);
+  } catch {}
+}
+let _persistTimer = null;
+function persistCacheSoon() {
+  clearTimeout(_persistTimer);
+  _persistTimer = setTimeout(async () => {
+    try {
+      // Sauve les 500 plus récents seulement
+      const entries = Array.from(TRANS_CACHE.entries()).slice(-500);
+      await chrome.storage.local.set({ [CACHE_PERSIST_KEY]: entries });
+    } catch {}
+  }, 1500);
+}
+
+function cacheGet(text, from, to) {
+  const k = cacheKey(text, from, to);
+  if (!TRANS_CACHE.has(k)) return null;
+  // LRU touch : re-insert pour passer en queue
+  const v = TRANS_CACHE.get(k);
+  TRANS_CACHE.delete(k);
+  TRANS_CACHE.set(k, v);
+  return v;
+}
+function cacheSet(text, from, to, value) {
+  const k = cacheKey(text, from, to);
+  TRANS_CACHE.set(k, value);
+  if (TRANS_CACHE.size > CACHE_MAX) {
+    // Supprime la plus ancienne entrée (premier élément du Map)
+    const oldest = TRANS_CACHE.keys().next().value;
+    if (oldest) TRANS_CACHE.delete(oldest);
+  }
+  persistCacheSoon();
+}
+
+/* 1) Google Translate — endpoint public "gtx".
+   On demande aussi `dt=bd` (alternatives), `dt=rm` (transliteration / phonétique)
+   pour enrichir le résultat sans coût supplémentaire. */
 async function fetchGoogleGtx(text, from, to) {
   const params = new URLSearchParams({
     client: 'gtx',
     sl: from || 'auto',
     tl: to || 'fr',
-    dt: 't',
     q: text,
   });
+  // dt : t=traduction, bd=alternatives, rm=phonétique source/cible
+  ['t', 'bd', 'rm'].forEach(d => params.append('dt', d));
   const url = 'https://translate.googleapis.com/translate_a/single?' + params.toString();
   const res = await fetch(url);
   if (!res.ok) throw new Error('gtx HTTP ' + res.status);
@@ -111,7 +240,43 @@ async function fetchGoogleGtx(text, from, to) {
   if (!translated) throw new Error('gtx: réponse vide');
 
   const detected = (typeof data[2] === 'string' && data[2]) ? data[2] : (from === 'auto' ? '' : from);
-  return { translated, detected, engine: 'google-gtx' };
+
+  // Phonétique : data[0][N] peut contenir [null,null,"phonetic_target","phonetic_source"]
+  let phoneticSrc = '', phoneticTgt = '';
+  for (const part of data[0]) {
+    if (Array.isArray(part)) {
+      if (typeof part[3] === 'string' && part[3]) phoneticSrc = (phoneticSrc + ' ' + part[3]).trim();
+      if (typeof part[2] === 'string' && part[2]) phoneticTgt = (phoneticTgt + ' ' + part[2]).trim();
+    }
+  }
+
+  // Alternatives par classe grammaticale : data[1] = [[pos, [translations…], …], …]
+  const alternatives = [];
+  if (Array.isArray(data[1])) {
+    for (const block of data[1]) {
+      if (!Array.isArray(block)) continue;
+      const pos = block[0] || '';
+      const arr = Array.isArray(block[2]) ? block[2] : [];
+      for (const item of arr) {
+        if (Array.isArray(item) && typeof item[0] === 'string') {
+          alternatives.push({
+            word: item[0],
+            pos,
+            backTranslations: Array.isArray(item[1]) ? item[1].slice(0, 4) : [],
+          });
+        }
+      }
+    }
+  }
+
+  return {
+    translated,
+    detected,
+    engine: 'google-gtx',
+    phoneticSrc,
+    phoneticTgt,
+    alternatives: alternatives.slice(0, 8),
+  };
 }
 
 /* 2) Google Translate — endpoint "dict-chrome-ex" (utilisé par Chrome) */
@@ -168,6 +333,10 @@ async function translate(text, from, to) {
   const clean = (text || '').trim();
   if (!clean) return { translated: '', detected: from || '', engine: 'none' };
 
+  await hydrateCache();
+  const cached = cacheGet(clean, from, to);
+  if (cached) return { ...cached, fromCache: true };
+
   const engines = [fetchGoogleGtx, fetchGoogleDict, fetchMyMemory];
   const errs = [];
 
@@ -196,6 +365,7 @@ async function translate(text, from, to) {
         continue;
       }
 
+      cacheSet(clean, from, to, r);
       return r;
     } catch (e) {
       errs.push(fn.name + ': ' + (e.message || e));
@@ -291,40 +461,6 @@ async function translateBatch(texts, from, to) {
 }
 
 /* =========================================================
-   Offscreen document — hôte de Whisper STT
-   ========================================================= */
-let offscreenCreating = null;
-async function ensureOffscreen() {
-  const url = chrome.runtime.getURL('offscreen/offscreen.html');
-  try {
-    const ctxs = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
-    if (ctxs.some(c => c.documentUrl === url)) return;
-  } catch {}
-  if (offscreenCreating) { await offscreenCreating; return; }
-  offscreenCreating = chrome.offscreen.createDocument({
-    url,
-    reasons: ['WORKERS'],
-    justification: 'Run Whisper WASM for tab audio transcription (no microphone).',
-  }).catch((err) => {
-    // Déjà créé en parallèle : ignore
-    if (!/Only a single offscreen/.test(err?.message || '')) throw err;
-  }).finally(() => { offscreenCreating = null; });
-  await offscreenCreating;
-}
-
-// Relaie la progression Whisper aux content scripts actifs
-chrome.runtime.onMessage.addListener((msg) => {
-  if (!msg || !msg.type) return;
-  if (msg.type === 'WHISPER_PROGRESS' || msg.type === 'WHISPER_READY' || msg.type === 'WHISPER_OFFSCREEN_LOADED') {
-    chrome.tabs.query({}, (tabs) => {
-      for (const t of tabs || []) {
-        if (t.id) chrome.tabs.sendMessage(t.id, msg).catch(() => {});
-      }
-    });
-  }
-});
-
-/* =========================================================
    Messages
    ========================================================= */
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -352,62 +488,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'TTS_SPEAK') {
-    try {
-      chrome.tts.stop();
-      chrome.tts.speak(msg.text || '', { lang: msg.lang || 'fr-FR', rate: 1.0 });
-    } catch (err) { console.warn('TU: tts error', err); }
+    (async () => {
+      try {
+        const { ttsRate = 1.0 } = await chrome.storage.sync.get(['ttsRate']);
+        const rate = Number.isFinite(+ttsRate) ? Math.min(2, Math.max(0.5, +ttsRate)) : 1.0;
+        chrome.tts.stop();
+        chrome.tts.speak(msg.text || '', { lang: msg.lang || 'fr-FR', rate });
+      } catch (err) { console.warn('TU: tts error', err); }
+    })();
     return;
   }
 
-  if (msg.type === 'TRANSCRIBE_PCM') {
-    (async () => {
-      try {
-        await ensureOffscreen();
-        const result = await chrome.runtime.sendMessage({
-          type: 'OFFSCREEN_TRANSCRIBE',
-          pcm: msg.pcm,
-          sampleRate: msg.sampleRate || 16000,
-        });
-        sendResponse(result || { ok: false, error: 'pas de réponse offscreen' });
-      } catch (err) {
-        sendResponse({ ok: false, error: err?.message || String(err) });
-      }
-    })();
-    return true;
-  }
-
-  if (msg.type === 'WHISPER_WARMUP') {
-    (async () => {
-      try {
-        await ensureOffscreen();
-        const result = await chrome.runtime.sendMessage({ type: 'OFFSCREEN_WARMUP' });
-        sendResponse(result || { ok: false });
-      } catch (err) {
-        sendResponse({ ok: false, error: err?.message || String(err) });
-      }
-    })();
-    return true;
-  }
-
-  if (msg.type === 'GET_TAB_STREAM_ID') {
-    const tabId = sender?.tab?.id;
-    if (!tabId) { sendResponse({ ok: false, error: 'aucun onglet sender' }); return; }
-    try {
-      chrome.tabCapture.getMediaStreamId(
-        { consumerTabId: tabId, targetTabId: tabId },
-        (streamId) => {
-          if (chrome.runtime.lastError) {
-            sendResponse({ ok: false, error: chrome.runtime.lastError.message });
-          } else if (!streamId) {
-            sendResponse({ ok: false, error: 'streamId vide' });
-          } else {
-            sendResponse({ ok: true, streamId });
-          }
-        }
-      );
-    } catch (err) {
-      sendResponse({ ok: false, error: err?.message || String(err) });
-    }
-    return true; // async
-  }
 });

@@ -11,12 +11,15 @@
   const SYNC_DEFAULTS = {
     selection: true,
     qcm: false,
-    audio: false,
     langFrom: 'auto',
     langTo: 'fr',
     hoverDelay: 450,
     ttsRate: 1.0,
     history: true,
+    ipa: true,                 // afficher phonétique IPA dans tooltip
+    alts: true,                // afficher traductions alternatives
+    qcmHint: true,             // suggérer la réponse probable (analyseur grammatical)
+    qcmAudio: true,            // bouton TTS sur la phrase originale
     avatar: '👤',
     displayName: '',
   };
@@ -27,7 +30,15 @@
     langStats: {},
     history: [],
     favorites: [],
+    dailyActivity: {}, // { 'YYYY-MM-DD': count }
   };
+
+  function dayKey(d) {
+    const dt = (d instanceof Date) ? d : new Date(d || Date.now());
+    return dt.getFullYear() + '-' +
+      String(dt.getMonth() + 1).padStart(2, '0') + '-' +
+      String(dt.getDate()).padStart(2, '0');
+  }
 
   const LANG_LABEL = {
     auto: 'Auto', en: 'Anglais', fr: 'Français', es: 'Espagnol',
@@ -48,8 +59,7 @@
     tgSelection:$('tgSelection'),
     tgQcm:      $('tgQcm'),
     btnQcm:     $('btnQcm'),
-    tgAudio:    $('tgAudio'),
-    btnAudio:   $('btnAudio'),
+    btnOpenLiveCaption: $('btnOpenLiveCaption'),
     langFrom:   $('langFrom'),
     langTo:     $('langTo'),
     swap:       $('swapLang'),
@@ -61,6 +71,7 @@
     btnFav:     $('btnFav'),
     btnSettings:$('btnSettings'),
     btnProfile: $('btnProfile'),
+    btnSidePanel: $('btnSidePanel'),
     mainView:   $('mainView'),
     settingsView: $('settingsView'),
     profileView:  $('profileView'),
@@ -74,6 +85,10 @@
     settTtsRate:    $('settTtsRate'),
     settTtsVal:     $('settTtsVal'),
     settHistory:    $('settHistory'),
+    settIpa:        $('settIpa'),
+    settAlts:       $('settAlts'),
+    settQcmHint:    $('settQcmHint'),
+    settQcmAudio:   $('settQcmAudio'),
     btnClearHistory:$('btnClearHistory'),
     btnClearCache:  $('btnClearCache'),
     btnResetAll:    $('btnResetAll'),
@@ -114,6 +129,15 @@
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       return tab || null;
     } catch { return null; }
+  }
+
+  // Chrome bloque l'injection sur ces schémas / origines ; on signale clairement
+  // à l'utilisateur au lieu d'échouer silencieusement.
+  function isRestrictedUrl(url) {
+    if (!url) return true;
+    return /^(chrome|edge|about|chrome-extension|moz-extension|view-source|devtools):/i.test(url)
+        || /^https?:\/\/chrome\.google\.com\/webstore/i.test(url)
+        || /^https?:\/\/chromewebstore\.google\.com/i.test(url);
   }
   async function updateDomainPill() {
     const tab = await getActiveTab();
@@ -161,6 +185,26 @@
 
   el.btnSettings.addEventListener('click', () => showView('settingsView'));
   el.btnProfile .addEventListener('click', () => showView('profileView'));
+
+  if (el.btnSidePanel) {
+    el.btnSidePanel.addEventListener('click', async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.windowId) throw new Error('Pas de fenêtre courante');
+        // open() exige un user-gesture — le clic dans le popup en est un.
+        await chrome.sidePanel.open({ windowId: tab.windowId });
+        // Le popup se ferme tout seul quand on clique à l'extérieur — mais
+        // pour s'assurer qu'on voit bien le side panel, on le ferme.
+        window.close();
+      } catch (err) {
+        console.warn('TU: cannot open side panel', err);
+        // Fallback : flash d'erreur sur le bouton
+        const orig = el.btnSidePanel.textContent;
+        el.btnSidePanel.textContent = '⚠️';
+        setTimeout(() => { el.btnSidePanel.textContent = orig; }, 1500);
+      }
+    });
+  }
   document.querySelectorAll('[data-close-panel]').forEach(btn => {
     btn.addEventListener('click', () => showView('mainView'));
   });
@@ -173,7 +217,6 @@
      ========================================================= */
 
   el.tgSelection.addEventListener('change', () => saveSync({ selection: el.tgSelection.checked }));
-  el.tgAudio    .addEventListener('change', () => saveSync({ audio:     el.tgAudio.checked }));
   el.tgQcm      .addEventListener('change', async () => {
     const on = el.tgQcm.checked;
     await saveSync({ qcm: on });
@@ -205,36 +248,42 @@
     if (el.src.value.trim()) doTranslate();
   });
 
-  /* Bouton Audio (action à la demande — garantit un user gesture pour tabCapture) */
-  el.btnAudio.addEventListener('click', async () => {
-    const original = el.btnAudio.textContent;
-    el.btnAudio.disabled = true;
-    el.btnAudio.textContent = '⏳ …';
-    el.btnAudio.classList.remove('is-success');
+  /* Bouton Live Caption : détecte le navigateur (Chrome / Brave / Edge / Opera)
+     et copie le bon schéma d'URL des réglages d'accessibilité.
+     (chrome.tabs.create sur chrome:// est bloqué ; copier-coller reste la voie
+     la plus simple côté utilisateur.) */
+  async function detectBrowser() {
     try {
-      const tab = await getActiveTab();
-      if (!tab?.id) throw new Error('onglet introuvable');
-      // Active le flag audio dans le storage (déclenche SETTINGS_UPDATED côté content)
-      await saveSync({ audio: true });
-      try {
-        await chrome.tabs.sendMessage(tab.id, { type: 'CTX_START_AUDIO' });
-      } catch {
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/content.js'] });
-        await chrome.scripting.insertCSS   ({ target: { tabId: tab.id }, files: ['content/content.css'] });
-        await chrome.tabs.sendMessage(tab.id, { type: 'CTX_START_AUDIO' });
+      if (navigator.brave && typeof navigator.brave.isBrave === 'function') {
+        const b = await navigator.brave.isBrave();
+        if (b) return { name: 'Brave', scheme: 'brave', emoji: '🦁' };
       }
-      el.btnAudio.classList.add('is-success');
-      el.btnAudio.textContent = '✅ Lancé';
-      setTimeout(() => window.close(), 400);
-    } catch (err) {
-      el.btnAudio.textContent = '⚠️ Erreur';
-      setTimeout(() => {
-        el.btnAudio.textContent = original;
-        el.btnAudio.disabled = false;
-        el.btnAudio.classList.remove('is-success');
-      }, 1600);
-    }
-  });
+    } catch {}
+    const ua = navigator.userAgent || '';
+    if (/Edg\//.test(ua))                  return { name: 'Edge',   scheme: 'edge',   emoji: '🔵' };
+    if (/OPR\/|Opera/.test(ua))            return { name: 'Opera',  scheme: 'opera',  emoji: '🔴' };
+    if (/Vivaldi/.test(ua))                return { name: 'Vivaldi',scheme: 'vivaldi',emoji: '🟠' };
+    return { name: 'Chrome', scheme: 'chrome', emoji: '🟢' };
+  }
+
+  if (el.btnOpenLiveCaption) {
+    // Pré-affiche le navigateur détecté dans le sous-titre du bloc
+    detectBrowser().then(b => {
+      const sub = document.getElementById('lcSub');
+      if (sub) sub.textContent = 'Utilisez la fonction native de ' + b.name + ' ' + b.emoji;
+    }).catch(() => {});
+
+    el.btnOpenLiveCaption.addEventListener('click', async () => {
+      const b = await detectBrowser();
+      const url = b.scheme + '://settings/accessibility';
+      try {
+        await navigator.clipboard.writeText(url);
+        flash(el.btnOpenLiveCaption, '✅ Copié pour ' + b.name + ' — colle dans la barre d\'adresse', 2200);
+      } catch {
+        flash(el.btnOpenLiveCaption, '⚠️ Copie refusée — ouvrez ' + url + ' manuellement', 3000);
+      }
+    });
+  }
 
   /* Bouton QCM (action à la demande) */
   el.btnQcm.addEventListener('click', async () => {
@@ -242,9 +291,18 @@
     el.btnQcm.disabled = true;
     el.btnQcm.textContent = '⏳ …';
     el.btnQcm.classList.remove('is-success');
+    const restoreLabel = (label) => {
+      el.btnQcm.textContent = label;
+      setTimeout(() => {
+        el.btnQcm.textContent = original;
+        el.btnQcm.classList.remove('is-success');
+        el.btnQcm.disabled = false;
+      }, 1800);
+    };
     try {
       const tab = await getActiveTab();
       if (!tab?.id) throw new Error('onglet introuvable');
+      if (isRestrictedUrl(tab.url)) { restoreLabel('🚫 Page système'); return; }
       let res;
       try {
         res = await chrome.tabs.sendMessage(tab.id, { type: 'RUN_QCM' });
@@ -262,8 +320,7 @@
         el.btnQcm.disabled = false;
       }, 1800);
     } catch {
-      el.btnQcm.textContent = '⚠️ Erreur';
-      setTimeout(() => { el.btnQcm.textContent = original; el.btnQcm.disabled = false; }, 1600);
+      restoreLabel('⚠️ Erreur');
     }
   });
 
@@ -360,11 +417,11 @@
     el.btnFav.classList.toggle('is-active', isFav);
   }
 
-  function flash(btn, label) {
+  function flash(btn, label, dur = 1100) {
     const original = btn.textContent;
     btn.textContent = label;
     btn.disabled = true;
-    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1100);
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, dur);
   }
 
   /* =========================================================
@@ -380,6 +437,10 @@
     el.settTtsRate   .value   = s.ttsRate;
     el.settTtsVal    .textContent = (+s.ttsRate).toFixed(1) + '×';
     el.settHistory   .checked = s.history !== false;
+    if (el.settIpa)  el.settIpa.checked  = s.ipa  !== false;
+    if (el.settAlts) el.settAlts.checked = s.alts !== false;
+    if (el.settQcmHint)    el.settQcmHint.checked    = !!s.qcmHint;
+    if (el.settQcmAudio)   el.settQcmAudio.checked   = s.qcmAudio !== false;
   }
 
   el.settLangFrom.addEventListener('change', () => {
@@ -407,6 +468,10 @@
   el.settHistory.addEventListener('change', () => {
     saveSync({ history: el.settHistory.checked });
   });
+  if (el.settIpa)  el.settIpa.addEventListener('change',  () => saveSync({ ipa:  el.settIpa.checked }));
+  if (el.settAlts) el.settAlts.addEventListener('change', () => saveSync({ alts: el.settAlts.checked }));
+  if (el.settQcmHint)    el.settQcmHint.addEventListener('change',    () => saveSync({ qcmHint:    el.settQcmHint.checked }));
+  if (el.settQcmAudio)   el.settQcmAudio.addEventListener('change',   () => saveSync({ qcmAudio:   el.settQcmAudio.checked }));
 
   el.btnClearHistory.addEventListener('click', async () => {
     await chrome.storage.local.set({ history: [], favorites: [], langStats: {}, totalTranslations: 0 });
@@ -458,6 +523,52 @@
     el.profileName._t = setTimeout(() => saveSync({ displayName: v }), 250);
   });
 
+  function computeStreak(daily) {
+    // Streak quotidien : nb de jours consécutifs jusqu'à aujourd'hui (ou hier)
+    // qui contiennent au moins 1 traduction.
+    let streak = 0;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    for (let i = 0; i < 365; i++) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - i);
+      if ((daily[dayKey(d)] || 0) > 0) streak++;
+      else if (i === 0) {
+        // Aujourd'hui sans activité → on regarde si hier compte (streak en cours mais pas cassé)
+        continue;
+      } else {
+        break;
+      }
+    }
+    return streak;
+  }
+
+  function renderHeatmap(daily) {
+    const root = document.getElementById('heatmap');
+    if (!root) return;
+    root.innerHTML = '';
+    // 30 jours, du plus ancien (gauche) au plus récent (droite)
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const todayKey = dayKey(today);
+    const counts = [];
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(today); d.setDate(today.getDate() - i);
+      counts.push({ key: dayKey(d), count: daily[dayKey(d)] || 0, date: d });
+    }
+    const max = Math.max(1, ...counts.map(c => c.count));
+    let total = 0;
+    for (const c of counts) {
+      total += c.count;
+      const lvl = c.count === 0 ? 0 : Math.min(4, Math.ceil((c.count / max) * 4));
+      const cell = document.createElement('div');
+      cell.className = 'heatmap-cell lvl-' + lvl + (c.key === todayKey ? ' is-today' : '');
+      cell.title = c.date.toLocaleDateString() + ' : ' + c.count + ' traduction' + (c.count > 1 ? 's' : '');
+      root.appendChild(cell);
+    }
+    const tot = document.getElementById('heatmapTotal');
+    if (tot) tot.textContent = total + ' total';
+  }
+
   async function renderStats() {
     const L = await loadLocal();
     el.statTotal.textContent = L.totalTranslations || 0;
@@ -466,6 +577,12 @@
     const installedAt = L.installedAt || Date.now();
     const days = Math.max(0, Math.floor((Date.now() - installedAt) / 86400000));
     el.statDays.textContent = days || 1;
+
+    const daily = L.dailyActivity || {};
+    const streak = computeStreak(daily);
+    const statStreak = document.getElementById('statStreak');
+    if (statStreak) statStreak.textContent = '🔥 ' + streak;
+    renderHeatmap(daily);
   }
 
   /* --- History & Favorites --- */
@@ -483,10 +600,22 @@
     const langStats = L.langStats || {};
     const k = entry.from || 'auto';
     langStats[k] = (langStats[k] || 0) + 1;
+
+    // Activité du jour pour le heatmap + le streak
+    const daily = L.dailyActivity || {};
+    const today = dayKey(new Date());
+    daily[today] = (daily[today] || 0) + 1;
+    // Garde max 90 jours d'historique pour rester léger
+    const keys = Object.keys(daily).sort();
+    if (keys.length > 90) {
+      for (const k2 of keys.slice(0, keys.length - 90)) delete daily[k2];
+    }
+
     await chrome.storage.local.set({
       history: trimmed,
       totalTranslations: (L.totalTranslations || 0) + 1,
       langStats,
+      dailyActivity: daily,
     });
   }
 
@@ -583,7 +712,6 @@
     const s = await loadSync();
     el.tgSelection.checked = !!s.selection;
     el.tgQcm      .checked = !!s.qcm;
-    el.tgAudio    .checked = !!s.audio;
     if (s.langFrom) el.langFrom.value = s.langFrom;
     if (s.langTo)   el.langTo  .value = s.langTo;
 

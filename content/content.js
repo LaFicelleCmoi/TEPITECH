@@ -17,11 +17,18 @@
   const DEFAULTS = {
     selection: true,
     qcm: false,
-    audio: false,
     langFrom: 'auto',
     langTo: 'fr',
+    hoverDelay: 450,
+    ipa: true,
+    alts: true,
+    qcmHint:    true,  // suggérer la réponse probable (analyseur)
+    qcmAudio:   true,  // bouton TTS sur phrase originale
   };
   const state = { ...DEFAULTS };
+
+  // Compteur QCM traduits dans cette session (visible dans le toast + console)
+  let qcmSessionCount = 0;
 
   const FLAG = {
     auto: '🌍', en: '🇺🇸', fr: '🇫🇷', es: '🇪🇸', de: '🇩🇪',
@@ -97,16 +104,20 @@
       <div class="tu-row">
         <span class="tu-flag tu-flag-from">🌍</span>
         <span class="tu-word"></span>
+        <span class="tu-ipa" hidden></span>
         <span class="tu-pos"></span>
       </div>
       <div class="tu-row tu-translated">
         <span class="tu-flag tu-flag-to">🇫🇷</span>
         <span class="tu-fr"></span>
       </div>
+      <div class="tu-alts" hidden></div>
       <div class="tu-actions">
-        <button class="tu-mini-btn tu-speak"   title="Écouter">🔊</button>
-        <button class="tu-mini-btn tu-copy"    title="Copier">📋</button>
-        <button class="tu-mini-btn tu-wide tu-more">📖 Plus de détails</button>
+        <button class="tu-mini-btn tu-speak"      title="Écouter (langue source)">🔊</button>
+        <button class="tu-mini-btn tu-speak-tgt"  title="Écouter la traduction">🇫🇷🔊</button>
+        <button class="tu-mini-btn tu-copy"       title="Copier la traduction">📋</button>
+        <button class="tu-mini-btn tu-fav"        title="Ajouter aux favoris">☆</button>
+        <button class="tu-mini-btn tu-wide tu-more" title="Définition en ligne">📖</button>
       </div>
     `;
     document.documentElement.appendChild(tooltip);
@@ -117,17 +128,69 @@
       const code = tooltip.dataset.detected || 'en';
       speak(w, SPEECH_LANG[code] || 'en-US');
     });
+    tooltip.querySelector('.tu-speak-tgt').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const w = tooltip.querySelector('.tu-fr').textContent;
+      const code = state.langTo || 'fr';
+      if (w && w !== '…' && !w.startsWith('⚠️')) {
+        speak(w, SPEECH_LANG[code] || 'fr-FR');
+      }
+    });
     tooltip.querySelector('.tu-copy').addEventListener('click', async (e) => {
       e.stopPropagation();
       const fr = tooltip.querySelector('.tu-fr').textContent;
       try { await navigator.clipboard.writeText(fr); toast('Copié'); } catch {}
+    });
+    tooltip.querySelector('.tu-fav').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const text = tooltip.querySelector('.tu-word').textContent;
+      const translated = tooltip.querySelector('.tu-fr').textContent;
+      const from = tooltip.dataset.detected || (state.langFrom || 'auto');
+      const to = state.langTo || 'fr';
+      if (!text || !translated || translated === '…' || translated.startsWith('⚠️')) return;
+      try {
+        const local = await chrome.storage.local.get(['favorites']);
+        const favs = Array.isArray(local.favorites) ? local.favorites : [];
+        const exists = favs.findIndex(f => f.text === text && f.to === to);
+        const btn = tooltip.querySelector('.tu-fav');
+        if (exists >= 0) {
+          favs.splice(exists, 1);
+          btn.textContent = '☆';
+          btn.classList.remove('is-active');
+          toast('Retiré des favoris');
+        } else {
+          favs.unshift({ text, translated, from, to, favoritedAt: Date.now() });
+          btn.textContent = '★';
+          btn.classList.add('is-active');
+          toast('Ajouté aux favoris');
+        }
+        await chrome.storage.local.set({ favorites: favs.slice(0, 200) });
+      } catch {}
     });
     tooltip.querySelector('.tu-more').addEventListener('click', (e) => {
       e.stopPropagation();
       const w = tooltip.querySelector('.tu-word').textContent;
       window.open('https://www.google.com/search?q=' + encodeURIComponent('définition ' + w), '_blank', 'noopener');
     });
+
+    // Délégation : clic sur une alternative → la copier
+    tooltip.querySelector('.tu-alts').addEventListener('click', async (e) => {
+      const chip = e.target.closest('.tu-alt-chip');
+      if (!chip) return;
+      e.stopPropagation();
+      const w = chip.dataset.word || chip.textContent.trim();
+      try { await navigator.clipboard.writeText(w); toast('« ' + w + ' » copié'); } catch {}
+    });
     return tooltip;
+  }
+
+  // Indique si un mot/phrase est déjà dans les favoris pour mettre à jour l'icône ☆/★
+  async function isFavorite(text, to) {
+    try {
+      const local = await chrome.storage.local.get(['favorites']);
+      const favs = Array.isArray(local.favorites) ? local.favorites : [];
+      return favs.some(f => f.text === text && f.to === to);
+    } catch { return false; }
   }
 
   function positionTooltip(t, rect) {
@@ -153,6 +216,13 @@
     t.querySelector('.tu-fr').textContent   = '…';
     t.querySelector('.tu-flag-from').textContent = FLAG[state.langFrom] || '🌍';
     t.querySelector('.tu-flag-to').textContent   = FLAG[state.langTo]   || '🇫🇷';
+    // Reset des champs enrichis
+    const ipaEl  = t.querySelector('.tu-ipa');
+    const altsEl = t.querySelector('.tu-alts');
+    const favBtn = t.querySelector('.tu-fav');
+    ipaEl.hidden = true; ipaEl.textContent = '';
+    altsEl.hidden = true; altsEl.innerHTML = '';
+    favBtn.textContent = '☆'; favBtn.classList.remove('is-active');
 
     t.style.visibility = 'hidden';
     t.classList.add('tu-show');
@@ -162,11 +232,50 @@
     });
 
     try {
-      const { translated, detected } = await apiTranslate(text, state.langFrom || 'auto', state.langTo || 'fr');
+      const r = await apiTranslate(text, state.langFrom || 'auto', state.langTo || 'fr');
       if (seq !== tooltipSeq) return;
+      const { translated, detected, phoneticSrc, alternatives, fromCache, engine } = r;
+
       t.querySelector('.tu-fr').textContent = translated || '—';
       if (detected && FLAG[detected]) t.querySelector('.tu-flag-from').textContent = FLAG[detected];
       t.dataset.detected = detected || '';
+
+      // IPA / phonétique source si disponible (et activé en réglages)
+      if (state.ipa !== false && phoneticSrc && phoneticSrc.length < 60) {
+        ipaEl.textContent = '/' + phoneticSrc + '/';
+        ipaEl.hidden = false;
+      }
+
+      // Alternatives (si Google a renvoyé des synonymes par classe grammaticale)
+      if (state.alts !== false && Array.isArray(alternatives) && alternatives.length > 0) {
+        // Limite à 5 chips, dédupliqué, filtre la traduction principale
+        const seen = new Set([(translated || '').toLowerCase()]);
+        const chips = [];
+        for (const a of alternatives) {
+          const w = (a.word || '').trim();
+          if (!w || seen.has(w.toLowerCase())) continue;
+          seen.add(w.toLowerCase());
+          chips.push(`<button class="tu-alt-chip" data-word="${w.replace(/"/g, '&quot;')}" title="${a.pos || ''} — clic pour copier">${w}</button>`);
+          if (chips.length >= 5) break;
+        }
+        if (chips.length) {
+          altsEl.innerHTML = chips.join('');
+          altsEl.hidden = false;
+        }
+      }
+
+      // Indicateur si la réponse vient du cache (petit point dans le pos)
+      if (fromCache) {
+        t.querySelector('.tu-pos').textContent = '⚡';
+        t.querySelector('.tu-pos').title = 'Réponse instantanée (cache)';
+      } else if (engine && engine !== 'google-gtx') {
+        t.querySelector('.tu-pos').textContent = '·' + engine.replace('google-', '');
+      }
+
+      // État du bouton favori
+      const fav = await isFavorite(text, state.langTo || 'fr');
+      if (fav) { favBtn.textContent = '★'; favBtn.classList.add('is-active'); }
+
       requestAnimationFrame(() => positionTooltip(t, rect));
     } catch (err) {
       if (seq !== tooltipSeq) return;
@@ -239,13 +348,14 @@
 
     clearTimeout(hoverTimer);
     const cx = e.clientX, cy = e.clientY;
+    const delay = Math.max(80, Math.min(2000, Number(state.hoverDelay) || 450));
     hoverTimer = setTimeout(() => {
       const w = wordAtPoint(cx, cy);
       if (!w) { hoverLastWord = ''; hideTooltip(); return; }
       if (w.text === hoverLastWord && tooltip?.classList.contains('tu-show')) return;
       hoverLastWord = w.text;
       showTooltipForText(w.text, w.rect);
-    }, 450);
+    }, delay);
   }
 
   function hideTooltip() { if (tooltip) tooltip.classList.remove('tu-show'); hoverLastWord = ''; }
@@ -258,7 +368,21 @@
   });
   document.addEventListener('mouseleave', () => { clearTimeout(hoverTimer); });
   document.addEventListener('scroll', hideTooltip, { passive: true });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideTooltip(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') hideTooltip();
+    // Raccourci 1-9 : bascule la sélection du <select> focus actuellement
+    // (utile pour parcourir rapidement les options d'un fill-blank traduit).
+    // Désactivé si on tape dans un champ texte.
+    const target = e.target;
+    if (e.altKey && /^[1-9]$/.test(e.key) && target?.tagName === 'SELECT') {
+      const idx = parseInt(e.key, 10) - 1;
+      if (idx < target.options.length) {
+        e.preventDefault();
+        target.selectedIndex = idx;
+        target.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }
+  });
 
   /* =========================================================
      2. QCM INLINE TRANSLATIONS
@@ -409,17 +533,29 @@
     // 1) <legend> direct (fieldset)
     const legend = container.querySelector(':scope > legend');
     if (legend) return legend;
+    // 1b) ARIA labelled-by ou aria-label sur le container
+    const labelledBy = container.getAttribute && container.getAttribute('aria-labelledby');
+    if (labelledBy) {
+      const lbl = document.getElementById(labelledBy);
+      if (lbl) return lbl;
+    }
 
     // 2) Frères précédents (headings, .question, légende implicite)
+    //    Élargi à 8 frères et plus de classes communes
     let sib = container.previousElementSibling;
-    for (let i = 0; sib && i < 6; i++, sib = sib.previousElementSibling) {
+    for (let i = 0; sib && i < 8; i++, sib = sib.previousElementSibling) {
       const tag = sib.tagName.toLowerCase();
       if (/^h[1-6]$/.test(tag))                     return sib;
-      if (sib.matches('legend, [role="heading"]'))  return sib;
-      if (sib.matches('.question, .quiz-question, .qcm-question, .survey-question')) return sib;
+      if (sib.matches('legend, [role="heading"], [aria-label]')) return sib;
+      if (sib.matches('.question, .quiz-question, .qcm-question, .survey-question, .prompt, .stem, .question-stem, .question-text, [data-question]')) return sib;
       const text = (sib.innerText || sib.textContent || '').trim();
       if (text && text.length < 500 && (tag === 'p' || tag === 'div' || tag === 'span' || tag === 'label')) {
-        if (/[?:;]\s*$/.test(text) || /^(question\s*\d*|q\d+|qcm)/i.test(text)) return sib;
+        // Question avec ?, : ou ; final, OU numérotation Q1/Question N, OU mots-clés QCM
+        if (/[?:;]\s*$/.test(text)
+            || /^(question\s*\d*|q\d+|qcm|exercice|exo)/i.test(text)
+            || /(choose|select|pick|which|what|where|when|why|how|qui|que|quoi|combien|où|quand|pourquoi|comment|laquelle|lesquels)\b/i.test(text.slice(0, 80))) {
+          return sib;
+        }
       }
     }
 
@@ -509,10 +645,24 @@
 
     /* --- Stratégie 5 : classes usuelles des frameworks de quiz --- */
     const QCM_SELECTORS = [
+      // Frameworks classiques
       '.answers .answer', '.quiz-answers .quiz-answer',
       '.qcm-option', '.qcm__option', '.question-choices .choice',
-      '.choices .choice', '.options .option',
-      '[data-qcm-option]', '[data-answer]', '[data-choice]'
+      '.choices .choice', '.options .option', '.answer-option',
+      // Data attributes
+      '[data-qcm-option]', '[data-answer]', '[data-choice]',
+      '[data-option]', '[data-test-id*="option"]',
+      // Sites de tests d'anglais français : Tepitech, anglaisfacile, etc.
+      '.tepitech-option', '.tep-option', '.exo-option', '.exercice-option',
+      '.reponse', '.reponse-item', '.proposition',
+      // ProjetVoltaire / OrthographeFR
+      '.pv-answer', '.voltaire-choice',
+      // Plateformes Moodle / Sakai
+      '.qtype_multichoice .answer', '.que .answer',
+      // Genially / Wooclap / Kahoot embeds
+      '.genially-answer', '.wooclap-choice', '.kahoot-answer',
+      // Boutons générique avec rôle "answer"
+      'button[role="option"]', '[role="answer"]',
     ].join(',');
     const candidateGroups = new Map();
     document.querySelectorAll(QCM_SELECTORS).forEach(n => {
@@ -565,7 +715,13 @@
       const sent = sentenceAroundSelect(select);
       if (!sent || !sent.text || sent.text.length < 5 || sent.text.length > 500) return;
 
-      out.push({ select, text: sent.text, afterNode: sent.endNode });
+      out.push({
+        select,
+        text: sent.text,
+        afterNode: sent.endNode,
+        buildWith: sent.buildWith,
+        rawSentence: sent.raw,  // phrase EN avec __TUBLANK__ pour reconstruction
+      });
     });
     return out;
   }
@@ -591,29 +747,39 @@
       cur = cur.nextSibling;
     }
 
-    // Extraction du texte de la phrase, select remplacé par "___"
-    let text = '';
+    // On extrait le texte avec un TOKEN unique à la place du <select>.
+    // Ce token nous permet de RECONSTRUIRE la phrase avec n'importe quel
+    // remplacement, et donc de demander à Google de traduire des variantes
+    // grammaticalement complètes (au lieu de "...___..." qui casse la syntaxe).
+    const TOKEN = '__TUBLANK__';
+    let raw = '';
     let node = startNode;
     const stop = endNode.nextSibling;
     while (node && node !== stop) {
       if (node === select) {
-        text += ' ___ ';
+        raw += ' ' + TOKEN + ' ';
       } else if (node.nodeType === 3) {
-        text += node.textContent || '';
+        raw += node.textContent || '';
       } else if (node.nodeType === 1) {
         const tag = node.tagName;
         if (tag === 'SELECT' || tag === 'INPUT' || tag === 'BUTTON' || tag === 'SCRIPT' || tag === 'STYLE') {
           // skip
         } else {
-          text += node.innerText || node.textContent || '';
+          raw += node.innerText || node.textContent || '';
         }
       }
       node = node.nextSibling;
     }
-    text = text.replace(/\s+/g, ' ').trim();
-    // Enlève la numérotation "1." ou "12." en début (optionnel, améliore la traduction)
-    // On la garde pour rester fidèle.
-    return { text, endNode };
+    raw = raw.replace(/\s+/g, ' ').trim();
+
+    const buildWith = (replacement) => {
+      const repl = (replacement == null ? '' : String(replacement)).trim() || '…';
+      return raw.split(TOKEN).join(repl);
+    };
+    // Texte affichable de référence (pour le sniff de langue cible)
+    const text = buildWith('___');
+
+    return { text, endNode, buildWith, raw, token: TOKEN };
   }
 
   async function runParallel(items, concurrency, fn) {
@@ -642,6 +808,262 @@
       span.textContent = ' (' + translated + ')';
     }
     node.appendChild(span);
+  }
+
+  /* === Helpers QCM === */
+
+  const escapeHtml = (s) => (s || '').replace(/[&<>"']/g, c => ({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+  }[c]));
+
+  const optOrigText = (opt) => {
+    if (!opt) return '';
+    return (opt.dataset.tuOriginal || opt.text || opt.value || '').replace(/\s+—\s+.*/, '').trim();
+  };
+
+  // Trouve la position de `needle` dans `hay` (insensible à la casse, word-boundary).
+  // Retourne [start, end] ou null.
+  function findInSentence(hay, needle) {
+    if (!needle || needle.length < 1) return null;
+    const escRe = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp('(^|[^\\p{L}\\p{N}\'’])(' + escRe + ')(?![\\p{L}\\p{N}])', 'iu');
+    const m = re.exec(hay);
+    if (!m) return null;
+    const start = m.index + m[1].length;
+    return [start, start + m[2].length];
+  }
+
+  /* === Analyseur de phrase pour suggérer la bonne réponse ===
+     Score chaque variante traduite selon sa "naturalité" en français.
+     Plus le score est élevé, plus la phrase semble grammaticalement correcte.
+
+     Critères pondérés (positifs et négatifs) :
+       + substitution propre (l'option traduite apparaît verbatim dans la phrase)
+       + commence par majuscule
+       + finit par ponctuation finale
+       + structure article + nom + prép + nom (typique français correct)
+       − longueur excessive vs autres variantes (français correct = concis)
+       − artefacts (___ résiduel, double espace)
+       − mot dupliqué consécutif (ex : "pour pour")
+       − doublon d'article (le le, du de)
+       − doublon de préposition (à de, en sur)
+       − orphelins / construction cassée */
+  function scoreFillVariant(variant, optTrans, allVariants) {
+    if (!variant) return -100;
+    const v = variant.trim();
+    let s = 100;
+
+    // Longueur RELATIVE par rapport à la plus courte (pénalité douce)
+    if (allVariants && allVariants.length) {
+      const minLen = Math.min(...allVariants.filter(Boolean).map(x => x.length));
+      s -= Math.max(0, v.length - minLen) * 0.18;
+    } else {
+      s -= v.length * 0.05;
+    }
+
+    // Substitution propre : l'option traduite apparaît verbatim
+    if (optTrans) {
+      if (findInSentence(v, optTrans)) s += 25;
+      else s -= 8;
+    }
+
+    // === Pénalités d'artefacts / fautes typiques de Google ===
+    if (/_{2,}/.test(v))                      s -= 60; // ___ résiduel
+    if (/\s{2,}/.test(v))                     s -= 4;  // double espace
+    if (/^[.,;:]/.test(v))                    s -= 20; // commence par ponct
+    if (/(\b\w{2,}\b)\s+\1\b/i.test(v))       s -= 18; // mot dupliqué consécutif
+
+    // Doublons d'articles français
+    if (/\b(le|la|les|du|des|de la)\s+(le|la|les|du|des|un|une)\b/i.test(v)) s -= 25;
+    // Doublons de prépositions
+    if (/\b(à|de|en|sur|sous|avec|pour|par|dans|chez|vers|sans)\s+(à|de|en|sur|sous|avec|pour|par|dans|chez|vers|sans)\b/i.test(v)) s -= 20;
+    // "de + le" devrait être "du", "de + les" → "des", "à + le" → "au"
+    if (/\bde le\b/i.test(v))   s -= 15;
+    if (/\bde les\b/i.test(v))  s -= 15;
+    if (/\bà le\b/i.test(v))    s -= 15;
+    if (/\bà les\b/i.test(v))   s -= 15;
+    // Article puis verbe (chaîne cassée)
+    if (/\b(le|la|les|un|une|des)\s+(est|sont|était|étaient|sera|seront|a été|ont été)\b/i.test(v)) s -= 12;
+
+    // === Bonus d'ordre grammatical ===
+    if (/^[A-ZÀ-Ö]/.test(v))                  s += 2;  // majuscule initiale
+    if (/[.!?]$/.test(v))                     s += 2;  // ponctuation finale
+    // Pattern article + nom + préposition + nom
+    if (/\b(le|la|les|un|une|des)\s+\w+\s+(de|du|des|à|au|aux|en)\s+\w+/i.test(v)) s += 4;
+    // Pattern verbe au passé composé (j'ai/tu as/il a + participe)
+    if (/\b(j'ai|tu as|il a|elle a|nous avons|vous avez|ils ont|elles ont)\s+\w+é\b/i.test(v)) s += 3;
+    // Pronom réfléchi correct
+    if (/\b(me|te|se|nous|vous)\s+\w+/i.test(v)) s += 1;
+
+    return s;
+  }
+
+  function pickProbableAnswer(variantsMap, optTransMap) {
+    const r = pickProbableAnswerWithConfidence(variantsMap, optTransMap);
+    return r ? r.orig : null;
+  }
+
+  /* Retourne la meilleure option ET un % de confiance basé sur la marge
+     entre le 1er et le 2e score. Marge faible → confiance basse (incertain). */
+  function pickProbableAnswerWithConfidence(variantsMap, optTransMap) {
+    const allVariants = Object.values(variantsMap || {});
+    const scored = [];
+    for (const [orig, variant] of Object.entries(variantsMap || {})) {
+      if (!variant) continue;
+      scored.push({
+        orig,
+        variant,
+        trans: optTransMap?.[orig] || '',
+        score: scoreFillVariant(variant, optTransMap?.[orig] || '', allVariants),
+      });
+    }
+    if (!scored.length) return null;
+    scored.sort((a, b) => b.score - a.score);
+    const best = scored[0];
+    const second = scored[1];
+    const margin = second ? Math.max(0, best.score - second.score) : 50;
+    // Mapping marge → confiance % : marge 0 = 40%, marge 50+ = 95%
+    const confidence = Math.min(95, Math.max(40, Math.round(40 + margin * 1.1)));
+    return { orig: best.orig, confidence, scored };
+  }
+
+  /* Rendu enrichi de la traduction d'un fill-blank :
+     - Phrase principale : variante de l'option active, avec surlignage
+     - Tableau de comparaison : toutes les variantes, cliquables pour sélectionner
+     - Suggestion 💡 sur l'option probable (si activé)
+     - Bouton 🔉 audio TTS de la phrase originale
+     - Bouton ⭐ pour sauvegarder la question
+  */
+  function renderFillBlankTranslation(selectEl, variantsMap, optTransMap, rawSentence) {
+    const span = document.createElement('span');
+    span.className = TRAD_Q_CLASS + ' tu-fill-blank';
+
+    const opts = Array.from(selectEl.options || []);
+    const optsOrigList = opts.map(o => optOrigText(o));
+    const suggestion = state.qcmHint ? pickProbableAnswerWithConfidence(variantsMap, optTransMap) : null;
+    qcmSessionCount++;
+
+    const renderActive = () => {
+      const cur = selectEl.options[selectEl.selectedIndex];
+      const curOrig = optOrigText(cur);
+      const variant = variantsMap[curOrig] || '';
+      const curOptTrans = optTransMap[curOrig] || '';
+
+      let sentenceHtml;
+      if (variant) {
+        const range = curOptTrans ? findInSentence(variant, curOptTrans) : null;
+        if (range) {
+          sentenceHtml =
+            escapeHtml(variant.slice(0, range[0])) +
+            `<mark class="tu-fill-mark" title="${escapeHtml(curOrig)}">${escapeHtml(variant.slice(range[0], range[1]))}</mark>` +
+            escapeHtml(variant.slice(range[1]));
+        } else {
+          sentenceHtml = escapeHtml(variant) +
+            (curOptTrans ? ` <mark class="tu-fill-mark" title="${escapeHtml(curOrig)}">→ ${escapeHtml(curOptTrans)}</mark>` : '');
+        }
+      } else {
+        sentenceHtml = curOptTrans
+          ? `<mark class="tu-fill-mark">${escapeHtml(curOptTrans)}</mark>`
+          : `<mark class="tu-fill-mark tu-fill-empty">…</mark>`;
+      }
+      return sentenceHtml;
+    };
+
+    const renderSuggestion = () => {
+      if (!suggestion || !suggestion.orig) return '';
+      const cur = selectEl.options[selectEl.selectedIndex];
+      const curOrig = optOrigText(cur);
+      const isChosen = curOrig === suggestion.orig;
+      const optTrans = optTransMap[suggestion.orig] || '';
+      // Niveau de confiance → classe CSS pour la couleur
+      const lvl = suggestion.confidence >= 80 ? 'high'
+                : suggestion.confidence >= 60 ? 'mid'
+                : 'low';
+      return `<div class="tu-fill-suggest tu-conf-${lvl}${isChosen ? ' is-chosen' : ''}">
+        <span class="tu-suggest-icon">⚜</span>
+        <span class="tu-suggest-label">Réponse probable</span>
+        <strong class="tu-suggest-word">${escapeHtml(suggestion.orig)}</strong>
+        ${optTrans ? `<span class="tu-suggest-arrow">→</span><em class="tu-suggest-trans">${escapeHtml(optTrans)}</em>` : ''}
+        <span class="tu-suggest-conf" title="Confiance basée sur l'analyse grammaticale">${suggestion.confidence}%</span>
+        ${isChosen
+          ? '<span class="tu-suggest-applied" title="Vous avez déjà cette option sélectionnée">✓</span>'
+          : `<button type="button" class="tu-suggest-apply" data-orig="${escapeHtml(suggestion.orig)}" title="Sélectionner cette option dans le menu">⚔ Choisir</button>`
+        }
+      </div>`;
+    };
+
+    const renderTools = () => {
+      const audio = state.qcmAudio !== false
+        ? `<button type="button" class="tu-fill-tool tu-fill-speak" title="Écouter la phrase originale">🔉 Écouter</button>` : '';
+      const bookmark = `<button type="button" class="tu-fill-tool tu-fill-bookmark" title="Sauvegarder la question dans les favoris">☆ Garder</button>`;
+      return `<div class="tu-fill-tools">${audio}${bookmark}</div>`;
+    };
+
+    const render = () => {
+      span.innerHTML = renderSuggestion() + renderActive() + renderTools();
+    };
+
+    render();
+
+    // === Wire interactions ===
+    span.addEventListener('click', (e) => {
+      // Bouton "Choisir" (Suggestion → applique l'option dans le <select>)
+      const apply = e.target.closest('.tu-suggest-apply');
+      if (apply) {
+        const orig = apply.dataset.orig;
+        const idx = optsOrigList.indexOf(orig);
+        if (idx >= 0) {
+          selectEl.selectedIndex = idx;
+          selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        return;
+      }
+      const speak = e.target.closest('.tu-fill-speak');
+      if (speak) {
+        const cur = selectEl.options[selectEl.selectedIndex];
+        const curOrig = optOrigText(cur) || '___';
+        // Reconstitue la phrase originale en remplaçant le token par l'option
+        // active. Si rawSentence n'est pas fourni, fallback = phrase + option.
+        const utter = rawSentence
+          ? rawSentence.split('__TUBLANK__').join(curOrig)
+          : curOrig;
+        chrome.runtime.sendMessage({ type: 'TTS_SPEAK', text: utter, lang: 'en-US' });
+        return;
+      }
+      const bm = e.target.closest('.tu-fill-bookmark');
+      if (bm) {
+        const cur = selectEl.options[selectEl.selectedIndex];
+        const curOrig = optOrigText(cur);
+        const variant = variantsMap[curOrig] || '';
+        // Construire le payload favori
+        try {
+          chrome.storage.local.get(['favorites'], (s) => {
+            const favs = Array.isArray(s.favorites) ? s.favorites : [];
+            const text = `[QCM] ${curOrig} (parmi : ${optsOrigList.filter(Boolean).join(' / ')})`;
+            const translated = variant || optTransMap[curOrig] || '';
+            favs.unshift({
+              text, translated,
+              from: state.langFrom !== 'auto' ? state.langFrom : 'en',
+              to: state.langTo || 'fr',
+              kind: 'qcm-fill',
+              context: { options: optsOrigList, variants: variantsMap },
+              favoritedAt: Date.now(),
+            });
+            chrome.storage.local.set({ favorites: favs.slice(0, 200) });
+            bm.textContent = '★';
+            bm.classList.add('is-active');
+            toast('Question ajoutée aux favoris');
+          });
+        } catch {}
+      }
+    });
+
+    // Maj quand l'utilisateur change la sélection (depuis le <select> ou nos boutons)
+    const onChange = () => render();
+    selectEl.addEventListener('change', onChange);
+    selectEl._tuFillCleanup = () => selectEl.removeEventListener('change', onChange);
+
+    return span;
   }
 
   let qcmRunning = false;
@@ -685,16 +1107,47 @@
         }
       }
 
-      // Phrases à trou (selects) : on traduit la phrase entière
-      // + chaque option du select individuellement (affichée dans le dropdown)
+      // Phrases à trou (selects) : pour chaque option, on traduit la phrase
+      // ENTIÈRE avec l'option substituée (donne du contexte à Google et
+      // garantit accords/articles/prépositions corrects), PLUS l'option
+      // seule (pour la chip et le surlignage du mot dans la phrase traduite).
       for (const fb of fillBlanks) {
-        jobs.push({ node: fb.select, afterNode: fb.afterNode, text: fb.text, type: 'sentence' });
-        Array.from(fb.select.options || []).forEach(opt => {
-          if (opt.dataset.tuTranslated === '1') return;
-          const txt = (opt.text || '').trim();
-          if (!txt || txt.length > 120) return;
-          jobs.push({ node: opt, text: txt, type: 'select-option' });
+        const opts = Array.from(fb.select.options || []);
+        // Conteneur de placement : on attache UN seul span après afterNode
+        // qui rassemblera tout. Marqué via un job 'fill-anchor' pour le rendu final.
+        jobs.push({
+          type: 'fill-anchor',
+          select: fb.select,
+          afterNode: fb.afterNode,
+          buildWith: fb.buildWith,
+          rawSentence: fb.rawSentence,
+          // pas de traduction à faire pour ce job, juste un marqueur
+          text: '',
+          skip: true,
         });
+        for (const opt of opts) {
+          const orig = ((opt.dataset.tuOriginal || opt.text || opt.value || '') + '').trim();
+          if (!orig || orig.length > 120) continue;
+          // Variante de phrase complète avec cette option substituée
+          const variantText = fb.buildWith(orig);
+          if (variantText.length <= 500) {
+            jobs.push({
+              type: 'fill-variant',
+              select: fb.select,
+              optOrig: orig,
+              text: variantText,
+            });
+          }
+          // Option seule (pour la chip + matching highlight)
+          if (opt.dataset.tuTranslated !== '1') {
+            jobs.push({
+              type: 'select-option',
+              node: opt,
+              optOrig: orig,
+              text: orig,
+            });
+          }
+        }
       }
 
       if (!jobs.length) return 0;
@@ -706,35 +1159,76 @@
         return 0;
       }
 
-      // Traduction en LOT : 1 requête pour N textes (x4 à x8 plus rapide)
-      const texts = jobs.map(j => j.text);
-      const { results } = await batchTranslateTexts(texts, from, to);
+      // Sépare les jobs traduisibles des jobs marqueurs (fill-anchor)
+      const translateJobs = jobs.filter(j => !j.skip);
+      const texts = translateJobs.map(j => j.text);
+      const { results: tres } = await batchTranslateTexts(texts, from, to);
+      // Re-mappe les résultats sur les indices d'origine
+      const results = new Array(jobs.length).fill(null);
+      let ti = 0;
+      jobs.forEach((j, i) => { if (!j.skip) results[i] = tres[ti++]; });
+
+      // Indexes par <select> :
+      //   fillBlankVariants : { select → { optOrig: translatedFullSentence } }
+      //   fillBlankOptTrans : { select → { optOrig: translatedOptionAlone } }
+      const fillBlankVariants = new Map();
+      const fillBlankOptTrans = new Map();
+      jobs.forEach((job, i) => {
+        const r = results[i];
+        if (!r || !r.translated) return;
+        if (job.type === 'fill-variant') {
+          if (!fillBlankVariants.has(job.select)) fillBlankVariants.set(job.select, {});
+          fillBlankVariants.get(job.select)[job.optOrig] = r.translated;
+        } else if (job.type === 'select-option') {
+          const sel = job.node?.parentNode;
+          if (!sel || sel.tagName !== 'SELECT') return;
+          if (!fillBlankOptTrans.has(sel)) fillBlankOptTrans.set(sel, {});
+          fillBlankOptTrans.get(sel)[job.optOrig] = r.translated;
+        }
+      });
 
       jobs.forEach((job, i) => {
         const r = results[i];
+
+        // Anchor pour fill-blank : on rend MAINTENANT en agrégeant
+        // les variantes et options traduites collectées plus haut.
+        if (job.type === 'fill-anchor') {
+          const variants = fillBlankVariants.get(job.select) || {};
+          const optTrans = fillBlankOptTrans.get(job.select) || {};
+          if (!Object.keys(variants).length && !Object.keys(optTrans).length) return;
+          // Évite la double-injection si on relance translateQcm sur le même DOM
+          const after = job.afterNode || job.select;
+          if (after.nextSibling && after.nextSibling.classList?.contains(TRAD_Q_CLASS)) return;
+          const span = renderFillBlankTranslation(job.select, variants, optTrans, job.rawSentence);
+          after.after(span);
+          // Marque les options du select comme traduites pour le compteur
+          Array.from(job.select.options || []).forEach(o => { o.dataset.tuTranslated = '1'; });
+          return;
+        }
+
         if (!r || !r.translated) return;
         if (sameText(r.translated, job.text)) return;
         if (r.detected && r.detected === to) return;
 
-        if (job.type === 'sentence') {
-          if (job.afterNode && job.afterNode.nextSibling &&
-              job.afterNode.nextSibling.nodeType === 1 &&
-              job.afterNode.nextSibling.classList?.contains(TRAD_Q_CLASS)) return;
-          const span = document.createElement('span');
-          span.className = TRAD_Q_CLASS;
-          span.textContent = r.translated;
-          (job.afterNode || job.node).after(span);
-        } else if (job.type === 'select-option') {
-          const original = (job.node.dataset.tuOriginal || job.node.text || '').trim();
-          if (!job.node.dataset.tuOriginal) job.node.dataset.tuOriginal = original;
-          job.node.text = original + '  —  ' + r.translated;
-        } else {
-          injectTranslation(job.node, r.translated, job.type);
+        if (job.type === 'fill-variant') {
+          // Le résultat est déjà collecté plus haut, rien à faire ici
+          return;
         }
-        job.node.dataset.tuTranslated = '1';
+        if (job.type === 'select-option') {
+          // Affiche la traduction directement dans le <option> du dropdown
+          const opt = job.node;
+          const original = (opt.dataset.tuOriginal || opt.text || '').trim();
+          if (!opt.dataset.tuOriginal) opt.dataset.tuOriginal = original;
+          opt.text = original + '  —  ' + r.translated;
+          opt.dataset.tuTranslated = '1';
+          return;
+        }
+        // Cas standards (question / option de QCM classique)
+        injectTranslation(job.node, r.translated, job.type);
+        if (job.node) job.node.dataset.tuTranslated = '1';
       });
 
-      const count = jobs.filter(j => j.node.dataset.tuTranslated === '1').length;
+      const count = jobs.filter(j => j.node && j.node.dataset && j.node.dataset.tuTranslated === '1').length;
       if (count > 0 && !silent) {
         toast('🌐 ' + count + ' élément' + (count > 1 ? 's' : '') + ' traduit' + (count > 1 ? 's' : ''));
       }
@@ -799,799 +1293,9 @@
   }
 
   /* =========================================================
-     3. AUDIO WIDGET — sous-titres réels
-     ========================================================= */
-  let widget = null;
-  let subtitleEngine = null;
-  const WIDGET_STATE_KEY = 'tuAudioWidget'; // position, taille font, minimisé, historique visible
-
-  const WIDGET_DEFAULTS = {
-    left: null, top: null,       // null → bottom-right par défaut
-    minimized: false,
-    fontSize: 14,                // px, valeur baseline
-    showHistory: true,
-    tabGain: 1.0,                // multiplicateur d'amplification de l'audio onglet
-    showHelp: false,
-  };
-  let widgetUI = { ...WIDGET_DEFAULTS };
-
-  function saveWidgetState(patch) {
-    Object.assign(widgetUI, patch || {});
-    try { chrome.storage.local.set({ [WIDGET_STATE_KEY]: widgetUI }); } catch {}
-  }
-  async function loadWidgetState() {
-    try {
-      const s = await new Promise(res => chrome.storage.local.get([WIDGET_STATE_KEY], res));
-      widgetUI = { ...WIDGET_DEFAULTS, ...(s?.[WIDGET_STATE_KEY] || {}) };
-    } catch {}
-  }
-
-  function buildWidget() {
-    if (widget) return widget;
-    widget = el('div', `${TU_ROOT_CLASS} tu-audio tu-glass`);
-    widget.innerHTML = `
-      <div class="tu-head">
-        <div class="tu-title">
-          <span class="tu-rec-dot"></span>
-          <strong>Live Audio</strong>
-          <span class="tu-muted tu-small tu-status">en attente…</span>
-        </div>
-        <div class="tu-head-btns">
-          <button class="tu-mini-btn tu-btn-help"      title="Aide / conseils pour un test d'anglais">?</button>
-          <button class="tu-mini-btn tu-btn-font-down" title="Texte plus petit">A−</button>
-          <button class="tu-mini-btn tu-btn-font-up"   title="Texte plus grand">A+</button>
-          <button class="tu-mini-btn tu-btn-min"       title="Réduire">—</button>
-          <button class="tu-mini-btn tu-btn-close"     title="Fermer">✕</button>
-        </div>
-      </div>
-      <div class="tu-body">
-        <div class="tu-line">
-          <span class="tu-flag tu-flag-src">🌍</span>
-          <span class="tu-muted tu-small">Original</span>
-          <span class="tu-muted tu-small tu-src-label"></span>
-          <p class="tu-orig tu-muted">Capture en cours — lance un audio sur la page.</p>
-        </div>
-        <div class="tu-divider"></div>
-        <div class="tu-line">
-          <span class="tu-flag tu-flag-tgt">🇫🇷</span>
-          <span class="tu-muted tu-small">Traduction</span>
-          <p class="tu-trad tu-muted">—</p>
-        </div>
-
-        <div class="tu-gain-row">
-          <span class="tu-muted tu-small">🔊 Boost</span>
-          <input class="tu-gain" type="range" min="0" max="3" step="0.1" value="1" title="Amplification de l'audio onglet"/>
-          <span class="tu-gain-val tu-muted tu-small">1.0×</span>
-        </div>
-        <div class="tu-level"><div class="tu-level-bar"></div></div>
-
-        <div class="tu-help" hidden>
-          <div class="tu-help-title">🎯 Capture audio de l'onglet</div>
-          <ul>
-            <li><b>Aucun micro utilisé</b> — seul l'audio de l'onglet est capté (<code>chrome.tabCapture</code>).</li>
-            <li>Transcription locale via <b>Whisper WASM</b> (1<sup>er</sup> lancement = téléchargement modèle ~40 Mo, cache ensuite).</li>
-            <li>Le modèle tourne dans un <b>offscreen document</b> — pas de réseau après le 1<sup>er</sup> load, tout reste privé.</li>
-            <li>Boost jusqu'à ×3 pour les pistes faibles.</li>
-            <li>Latence : ~5 s par fenêtre (chunks de 5 s).</li>
-          </ul>
-        </div>
-
-        <div class="tu-history" hidden></div>
-      </div>
-      <div class="tu-foot">
-        <button class="tu-mini-btn tu-btn-source"  title="Changer la source (auto / tab / mic / sous-titres…)">📡 Source</button>
-        <button class="tu-mini-btn tu-btn-pause"   title="Pause">⏸️</button>
-        <button class="tu-mini-btn tu-btn-history" title="Historique">📜</button>
-        <button class="tu-mini-btn tu-btn-export"  title="Export TXT">💾 TXT</button>
-        <button class="tu-mini-btn tu-btn-export-srt" title="Export SRT">🎬 SRT</button>
-      </div>
-    `;
-    document.documentElement.appendChild(widget);
-
-    // Applique les préférences persistantes
-    if (widgetUI.left != null && widgetUI.top != null) {
-      widget.style.left  = widgetUI.left  + 'px';
-      widget.style.top   = widgetUI.top   + 'px';
-      widget.style.right = 'auto'; widget.style.bottom = 'auto';
-    }
-    if (widgetUI.minimized) widget.classList.add('tu-min');
-    widget.style.setProperty('--tu-font-size', (widgetUI.fontSize || 14) + 'px');
-    const history = widget.querySelector('.tu-history');
-    if (history && !widgetUI.showHistory) history.hidden = true;
-    const helpEl = widget.querySelector('.tu-help');
-    if (helpEl && widgetUI.showHelp) helpEl.hidden = false;
-    // Slider de gain
-    const gainSlider = widget.querySelector('.tu-gain');
-    const gainVal    = widget.querySelector('.tu-gain-val');
-    if (gainSlider && gainVal) {
-      const initGain = Number(widgetUI.tabGain);
-      const g = Number.isFinite(initGain) ? initGain : 1.0;
-      gainSlider.value = String(g);
-      gainVal.textContent = g.toFixed(1) + '×';
-      gainSlider.addEventListener('input', () => {
-        const v = parseFloat(gainSlider.value) || 1;
-        gainVal.textContent = v.toFixed(1) + '×';
-        saveWidgetState({ tabGain: v });
-        if (subtitleEngine?.setTabGain) subtitleEngine.setTabGain(v);
-      });
-    }
-
-    /* Drag */
-    const head = widget.querySelector('.tu-head');
-    let drag = null;
-    head.addEventListener('mousedown', (e) => {
-      if (e.target.closest('.tu-head-btns')) return;
-      const r = widget.getBoundingClientRect();
-      drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
-      e.preventDefault();
-    });
-    document.addEventListener('mousemove', (e) => {
-      if (!drag) return;
-      const x = e.clientX - drag.dx;
-      const y = e.clientY - drag.dy;
-      const nx = Math.min(Math.max(8, x), window.innerWidth  - widget.offsetWidth  - 8);
-      const ny = Math.min(Math.max(8, y), window.innerHeight - widget.offsetHeight - 8);
-      widget.style.left   = nx + 'px';
-      widget.style.top    = ny + 'px';
-      widget.style.right  = 'auto'; widget.style.bottom = 'auto';
-    });
-    document.addEventListener('mouseup', () => {
-      if (drag) {
-        const r = widget.getBoundingClientRect();
-        saveWidgetState({ left: Math.round(r.left), top: Math.round(r.top) });
-      }
-      drag = null;
-    });
-
-    widget.querySelector('.tu-btn-min').addEventListener('click', () => {
-      widget.classList.toggle('tu-min');
-      saveWidgetState({ minimized: widget.classList.contains('tu-min') });
-    });
-    widget.querySelector('.tu-btn-close').addEventListener('click', () => {
-      stopAudio();
-      chrome.storage.sync.set({ audio: false });
-    });
-
-    widget.querySelector('.tu-btn-font-up').addEventListener('click', () => {
-      const cur = parseFloat(getComputedStyle(widget).getPropertyValue('--tu-font-size')) || 14;
-      const next = Math.min(28, cur + 2);
-      widget.style.setProperty('--tu-font-size', next + 'px');
-      saveWidgetState({ fontSize: next });
-    });
-    widget.querySelector('.tu-btn-font-down').addEventListener('click', () => {
-      const cur = parseFloat(getComputedStyle(widget).getPropertyValue('--tu-font-size')) || 14;
-      const next = Math.max(11, cur - 2);
-      widget.style.setProperty('--tu-font-size', next + 'px');
-      saveWidgetState({ fontSize: next });
-    });
-
-    let paused = false;
-    const pauseBtn = widget.querySelector('.tu-btn-pause');
-    pauseBtn.addEventListener('click', () => {
-      paused = !paused;
-      pauseBtn.textContent = paused ? '▶️' : '⏸️';
-      pauseBtn.title = paused ? 'Reprendre' : 'Pause';
-      if (subtitleEngine) subtitleEngine.paused = paused;
-    });
-
-    widget.querySelector('.tu-btn-source').addEventListener('click', () => {
-      if (!subtitleEngine) return;
-      subtitleEngine.cycleSource();
-    });
-
-    widget.querySelector('.tu-btn-history').addEventListener('click', () => {
-      const h = widget.querySelector('.tu-history');
-      h.hidden = !h.hidden;
-      saveWidgetState({ showHistory: !h.hidden });
-      if (!h.hidden) renderHistoryList();
-    });
-
-    widget.querySelector('.tu-btn-help').addEventListener('click', () => {
-      const h = widget.querySelector('.tu-help');
-      h.hidden = !h.hidden;
-      saveWidgetState({ showHelp: !h.hidden });
-    });
-
-    widget.querySelector('.tu-btn-export').addEventListener('click', () => {
-      const log = subtitleEngine?.log || [];
-      const txt = log.map(e => `[${e.t}]\n${e.src}\n→ ${e.trad}\n`).join('\n');
-      downloadBlob(txt || '(aucun sous-titre)', 'subtitles.txt', 'text/plain;charset=utf-8');
-      toast('Export TXT téléchargé');
-    });
-    widget.querySelector('.tu-btn-export-srt').addEventListener('click', () => {
-      const log = subtitleEngine?.log || [];
-      if (!log.length) { toast('Aucun sous-titre à exporter'); return; }
-      downloadBlob(buildSrt(log), 'subtitles.srt', 'text/plain;charset=utf-8');
-      toast('Export SRT téléchargé');
-    });
-
-    return widget;
-  }
-
-  function downloadBlob(content, filename, mime) {
-    const blob = new Blob([content], { type: mime });
-    const url = URL.createObjectURL(blob);
-    const a = el('a'); a.href = url; a.download = filename; a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-
-  function buildSrt(log) {
-    const fmt = (ms) => {
-      const s = Math.floor(ms / 1000);
-      const h = String(Math.floor(s / 3600)).padStart(2, '0');
-      const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
-      const sec = String(s % 60).padStart(2, '0');
-      const mss = String(ms % 1000).padStart(3, '0');
-      return `${h}:${m}:${sec},${mss}`;
-    };
-    // Si on a des ms absolus, on les utilise ; sinon on répartit 3 s par item
-    const hasMs = log.every(e => typeof e.ms === 'number');
-    const t0 = hasMs ? log[0].ms : 0;
-    const lines = [];
-    log.forEach((e, i) => {
-      const start = hasMs ? (e.ms - t0) : (i * 3000);
-      const end   = hasMs ? (log[i + 1] ? log[i + 1].ms - t0 : start + 3000) : (start + 3000);
-      lines.push(
-        String(i + 1),
-        `${fmt(start)} --> ${fmt(end)}`,
-        e.src || '',
-        e.trad ? e.trad : '',
-        ''
-      );
-    });
-    return lines.join('\n');
-  }
-
-  function renderHistoryList() {
-    const h = widget?.querySelector('.tu-history');
-    if (!h || !subtitleEngine) return;
-    const lastN = subtitleEngine.log.slice(-6);
-    h.innerHTML = lastN.map(e => `
-      <div class="tu-hist-item">
-        <div class="tu-hist-time">${e.t}</div>
-        <div class="tu-hist-src">${escapeHtml(e.src)}</div>
-        <div class="tu-hist-trad">${escapeHtml(e.trad || '')}</div>
-      </div>
-    `).join('') || '<div class="tu-muted tu-small">Historique vide</div>';
-    h.scrollTop = h.scrollHeight;
-  }
-
-  function escapeHtml(s) {
-    return (s || '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
-  }
-
-  function setStatus(txt) {
-    const s = widget?.querySelector('.tu-status'); if (s) s.textContent = txt;
-  }
-  function setSourceLabel(txt) {
-    const s = widget?.querySelector('.tu-src-label'); if (s) s.textContent = txt ? '· ' + txt : '';
-  }
-  function setOrig(text, langCode) {
-    if (!widget) return;
-    const p = widget.querySelector('.tu-orig');
-    const f = widget.querySelector('.tu-flag-src');
-    if (f) f.textContent = FLAG[langCode] || '🌍';
-    p.classList.remove('tu-muted');
-    if (p.textContent === text) return;
-    p.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 140, fill: 'forwards' }).onfinish = () => {
-      p.textContent = text;
-      p.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, fill: 'forwards' });
-    };
-  }
-  function setTrad(text, langCode) {
-    if (!widget) return;
-    const p = widget.querySelector('.tu-trad');
-    const f = widget.querySelector('.tu-flag-tgt');
-    if (f) f.textContent = FLAG[langCode] || '🇫🇷';
-    p.classList.remove('tu-muted');
-    p.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 140, fill: 'forwards' }).onfinish = () => {
-      p.textContent = text;
-      p.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, fill: 'forwards' });
-    };
-  }
-
-  /* Resample Float32Array PCM → 16 kHz mono (format Whisper) */
-  async function resampleTo16kMono(pcm, sourceRate) {
-    if (sourceRate === 16000) return pcm;
-    const targetLength = Math.ceil(pcm.length * 16000 / sourceRate);
-    const OfflineCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-    if (!OfflineCtx) {
-      // Fallback linéaire
-      const out = new Float32Array(targetLength);
-      const ratio = sourceRate / 16000;
-      for (let i = 0; i < targetLength; i++) {
-        const src = i * ratio;
-        const j = Math.floor(src);
-        const t = src - j;
-        out[i] = (pcm[j] || 0) * (1 - t) + (pcm[j + 1] || 0) * t;
-      }
-      return out;
-    }
-    const offline = new OfflineCtx(1, targetLength, 16000);
-    const buf = offline.createBuffer(1, pcm.length, sourceRate);
-    buf.copyToChannel(pcm, 0);
-    const srcNode = offline.createBufferSource();
-    srcNode.buffer = buf;
-    srcNode.connect(offline.destination);
-    srcNode.start(0);
-    const rendered = await offline.startRendering();
-    return rendered.getChannelData(0);
-  }
-
-  /* =========================================================
-     SubtitleEngine — capture AUDIO de l'onglet (priorité)
-     - PRIORITÉ : capture directe de l'audio de l'onglet via chrome.tabCapture
-       → amplification + lecture audible (Web Audio API)
-       → transcription via l'entrée audio par défaut du système
-         (micro OU Stereo Mix / Loopback pour les utilisateurs casque)
-     - Micro seul (fallback)
-     - Sous-titres (opt-in via cycleSource) : HTML5 tracks, YouTube,
-       Netflix, Vimeo, Twitch, video.js, Shaka, JW, Plyr
-     ========================================================= */
-  class SubtitleEngine {
-    constructor() {
-      this.log = [];
-      this.paused = false;
-      this.lastText = '';
-      // Modes : 'auto' | 'tab' | sous-titres ('video' | 'youtube' | ...)
-      // PAS de mode micro — capture onglet uniquement.
-      this.sourceMode = 'auto';
-      this.detachers = [];
-      this.detectedLang = state.langFrom !== 'auto' ? state.langFrom : 'en';
-
-      // Tab audio
-      this.tabStream = null;
-      this.audioCtx  = null;
-      this.tabGain   = null;
-      this.tabAnalyser = null;
-      this.levelRAF  = null;
-
-      // PCM / Whisper
-      this.scriptProc    = null;
-      this.pcmBuffers    = [];
-      this.pcmCollected  = 0;
-      this.transcribing  = false;
-      this.pendingPcm    = null;
-    }
-
-    async start() {
-      this.stop();
-      if (this.sourceMode === 'auto' || this.sourceMode === 'tab') {
-        // Audio de l'onglet UNIQUEMENT — jamais de micro.
-        const ok = await this.try_tab();
-        if (ok) {
-          setSourceLabel('tab');
-          setOrig('🎧 Audio de l\u2019onglet — lance une piste. Transcription Whisper en cours de chargement…', 'en');
-          setTrad('…', state.langTo);
-        } else {
-          setSourceLabel('—');
-          setStatus('❌ capture de l\u2019onglet refusée');
-          setOrig('Clique "Écouter" dans le popup pour autoriser la capture.', 'auto');
-          setTrad('—', state.langTo);
-        }
-        return;
-      }
-      // Modes sous-titres (opt-in via cycleSource)
-      if (this[`try_${this.sourceMode}`] && this[`try_${this.sourceMode}`]()) {
-        setSourceLabel(this.sourceMode);
-        return;
-      }
-      // Si un mode non-supporté a été sélectionné, on retombe sur tab
-      const fallback = await this.try_tab();
-      setSourceLabel(fallback ? 'tab' : '—');
-    }
-
-    stop() {
-      this.detachers.forEach(fn => { try { fn(); } catch {} });
-      this.detachers = [];
-      if (this.levelRAF) { cancelAnimationFrame(this.levelRAF); this.levelRAF = null; }
-      if (this.scriptProc) {
-        try { this.scriptProc.disconnect(); } catch {}
-        this.scriptProc.onaudioprocess = null;
-        this.scriptProc = null;
-      }
-      if (this.tabStream) {
-        try { this.tabStream.getTracks().forEach(t => t.stop()); } catch {}
-        this.tabStream = null;
-      }
-      if (this.audioCtx) {
-        try { this.audioCtx.close(); } catch {}
-        this.audioCtx = null;
-      }
-      this.tabGain = null; this.tabAnalyser = null;
-      this.pcmBuffers = []; this.pcmCollected = 0;
-    }
-
-    cycleSource() {
-      // Plus de 'mic' — audio de l'onglet uniquement (+ sous-titres opt-in)
-      const order = ['auto', 'tab', 'video', 'youtube', 'netflix', 'vimeo', 'twitch', 'generic'];
-      const idx = order.indexOf(this.sourceMode);
-      this.sourceMode = order[(idx + 1) % order.length];
-      toast('Source : ' + this.sourceMode);
-      this.start();
-    }
-
-    setTabGain(v) {
-      if (this.tabGain) {
-        try { this.tabGain.gain.value = Math.max(0, Math.min(4, Number(v) || 1)); } catch {}
-      }
-    }
-
-    /* --- Capture audio de l'onglet : chrome.tabCapture + Web Audio ---
-       Fait DEUX choses :
-       1) Reste audible pour l'utilisateur (route vers destination)
-       2) Expose un AnalyserNode pour l'indicateur de niveau
-       La TRANSCRIPTION, elle, passe par l'entrée audio système
-       (webkitSpeechRecognition ne sait pas consommer un stream custom).
-       → Pour un usage casque : activer "Stereo Mix" (Win) ou "Loopback" (Mac). */
-    async try_tab() {
-      try {
-        const res = await sendBG({ type: 'GET_TAB_STREAM_ID' });
-        if (!res?.ok || !res.streamId) {
-          setStatus('capture onglet indisponible (' + (res?.error || 'inconnu') + ')');
-          return false;
-        }
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            mandatory: {
-              chromeMediaSource:  'tab',
-              chromeMediaSourceId: res.streamId,
-            }
-          },
-          video: false,
-        });
-        this.tabStream = stream;
-
-        const Ctx = window.AudioContext || window.webkitAudioContext;
-        const ctx = new Ctx();
-        const src = ctx.createMediaStreamSource(stream);
-        const gain = ctx.createGain();
-        gain.gain.value = 1.0;
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 1024;
-
-        // src → gain → destination (audible) ET → analyser (meter)
-        src.connect(gain);
-        gain.connect(ctx.destination);
-        src.connect(analyser);
-
-        this.audioCtx = ctx;
-        this.tabGain = gain;
-        this.tabAnalyser = analyser;
-
-        this.startLevelMeter();
-        this.startPcmCollector(ctx, src);
-        // Warm-up Whisper en tâche de fond (charge le modèle dès que possible)
-        sendBG({ type: 'WHISPER_WARMUP' }).catch(() => {});
-        setStatus('🎧 audio onglet capturé — amplification + transcription');
-        return true;
-      } catch (err) {
-        console.warn('TU: tab capture failed', err);
-        setStatus('capture onglet refusée/indisponible');
-        return false;
-      }
-    }
-
-    /* --- Collecteur PCM pour Whisper ---
-       On branche un ScriptProcessorNode sur la source (chemin dupliqué, ne touche
-       pas à la destination audible) et on accumule des fenêtres de 5 s ; chaque
-       fenêtre est resamplée en 16 kHz mono puis envoyée à l'offscreen Whisper. */
-    startPcmCollector(ctx, source) {
-      const sp = ctx.createScriptProcessor(4096, 1, 1);
-      // Connect source → sp, puis sp → destination MUETTE (sinon Safari n'appelle pas onaudioprocess)
-      const silent = ctx.createGain();
-      silent.gain.value = 0;
-      source.connect(sp);
-      sp.connect(silent);
-      silent.connect(ctx.destination);
-
-      const CHUNK_SEC = 5;
-      const targetSamples = Math.round(ctx.sampleRate * CHUNK_SEC);
-
-      sp.onaudioprocess = (e) => {
-        if (this.paused) return;
-        const input = e.inputBuffer.getChannelData(0);
-        // Copie car le buffer sous-jacent est réutilisé
-        this.pcmBuffers.push(new Float32Array(input));
-        this.pcmCollected += input.length;
-        if (this.pcmCollected >= targetSamples) {
-          const combined = new Float32Array(this.pcmCollected);
-          let offset = 0;
-          for (const chunk of this.pcmBuffers) {
-            combined.set(chunk, offset);
-            offset += chunk.length;
-          }
-          this.pcmBuffers = [];
-          this.pcmCollected = 0;
-          this.dispatchTranscription(combined, ctx.sampleRate);
-        }
-      };
-      this.scriptProc = sp;
-    }
-
-    /* Ne fait qu'une transcription à la fois, buffer la plus récente sinon */
-    async dispatchTranscription(pcm, sampleRate) {
-      if (this.transcribing) {
-        // On remplace la pending pour toujours transcrire la plus récente
-        this.pendingPcm = { pcm, sampleRate };
-        return;
-      }
-      this.transcribing = true;
-      try {
-        await this.transcribeChunk(pcm, sampleRate);
-      } finally {
-        this.transcribing = false;
-        if (this.pendingPcm) {
-          const next = this.pendingPcm;
-          this.pendingPcm = null;
-          // Ne bloque pas le stack — relance en micro-tâche
-          Promise.resolve().then(() => this.dispatchTranscription(next.pcm, next.sampleRate));
-        }
-      }
-    }
-
-    async transcribeChunk(pcm, sampleRate) {
-      try {
-        const resampled = await resampleTo16kMono(pcm, sampleRate);
-        // Seuil d'énergie : on ne transcrit pas le silence
-        let sum = 0;
-        for (let i = 0; i < resampled.length; i++) sum += resampled[i] * resampled[i];
-        const rms = Math.sqrt(sum / resampled.length);
-        if (rms < 0.005) return; // silence
-
-        const res = await sendBG({
-          type: 'TRANSCRIBE_PCM',
-          pcm: resampled,
-          sampleRate: 16000,
-        });
-        if (res?.ok && res.text) {
-          this.handleCaption(res.text, 'en');
-        } else if (res && !res.ok && res.error) {
-          console.warn('TU: transcribe error', res.error);
-          setStatus('⚠️ ' + res.error);
-        }
-      } catch (err) {
-        console.warn('TU: transcribe failed', err);
-      }
-    }
-
-    startLevelMeter() {
-      const meter = widget?.querySelector('.tu-level-bar');
-      if (!meter || !this.tabAnalyser) return;
-      const buf = new Uint8Array(this.tabAnalyser.frequencyBinCount);
-      const loop = () => {
-        if (!this.tabAnalyser || !meter.isConnected) return;
-        this.tabAnalyser.getByteTimeDomainData(buf);
-        // RMS normalisé 0..1
-        let sum = 0;
-        for (let i = 0; i < buf.length; i++) {
-          const v = (buf[i] - 128) / 128;
-          sum += v * v;
-        }
-        const rms = Math.sqrt(sum / buf.length);
-        const pct = Math.min(100, Math.round(rms * 220)); // amplifie visuellement
-        meter.style.width = pct + '%';
-        meter.classList.toggle('tu-level-hot', pct > 75);
-        this.levelRAF = requestAnimationFrame(loop);
-      };
-      this.levelRAF = requestAnimationFrame(loop);
-    }
-
-    /* --- Tracks HTML5 natifs --- */
-    try_video() {
-      const videos = Array.from(document.querySelectorAll('video'));
-      let activated = false;
-      for (const v of videos) {
-        const tracks = v.textTracks;
-        if (!tracks || tracks.length === 0) continue;
-        for (let i = 0; i < tracks.length; i++) {
-          const tr = tracks[i];
-          if (tr.kind !== 'captions' && tr.kind !== 'subtitles') continue;
-          try { tr.mode = 'hidden'; } catch {}
-          const onCue = () => {
-            const cue = tr.activeCues?.[0];
-            if (!cue) return;
-            const text = (cue.text || '').replace(/<[^>]+>/g, '').trim();
-            if (text) this.handleCaption(text, tr.language || 'en');
-          };
-          tr.addEventListener('cuechange', onCue);
-          this.detachers.push(() => tr.removeEventListener('cuechange', onCue));
-          activated = true;
-        }
-      }
-      if (activated) { setStatus('sous-titres vidéo détectés'); return true; }
-      return false;
-    }
-
-    /* --- YouTube --- */
-    try_youtube() {
-      if (!/(^|\.)youtube\.com$/.test(location.hostname)) return false;
-      return this._attachDomCaptions(
-        () => document.querySelector('.ytp-caption-window-container') || document.querySelector('.caption-window'),
-        '.ytp-caption-segment, .captions-text span',
-        'sous-titres YouTube actifs',
-        'en attente des sous-titres YouTube… (activez les CC)'
-      );
-    }
-
-    /* --- Netflix --- */
-    try_netflix() {
-      if (!/(^|\.)netflix\.com$/.test(location.hostname)) return false;
-      return this._attachDomCaptions(
-        () => document.querySelector('.player-timedtext'),
-        '.player-timedtext-text-container span, .player-timedtext span',
-        'sous-titres Netflix actifs',
-        'activez les sous-titres Netflix…'
-      );
-    }
-
-    /* --- Vimeo --- */
-    try_vimeo() {
-      if (!/(^|\.)vimeo\.com$/.test(location.hostname)) return false;
-      return this._attachDomCaptions(
-        () => document.querySelector('.vp-captions') || document.querySelector('[class*="CaptionsRenderer"]'),
-        '.vp-captions-line, .vp-captions span, [class*="CaptionsRenderer"] span',
-        'sous-titres Vimeo actifs',
-        'activez les CC Vimeo…'
-      );
-    }
-
-    /* --- Twitch --- */
-    try_twitch() {
-      if (!/(^|\.)twitch\.tv$/.test(location.hostname)) return false;
-      return this._attachDomCaptions(
-        () => document.querySelector('.player-captions-container') || document.querySelector('.tw-captions'),
-        '.player-captions-container span, .player-captions-container p',
-        'sous-titres Twitch actifs',
-        'activez les CC Twitch…'
-      );
-    }
-
-    /* --- Players génériques (video.js, Shaka, JW, Plyr) --- */
-    try_generic() {
-      const selectors = [
-        '.vjs-text-track-display',              // video.js
-        '.shaka-text-container',                // Shaka Player
-        '.jw-captions',                         // JW Player
-        '.plyr__captions',                      // Plyr
-        '[aria-label="captions"]',
-      ];
-      for (const sel of selectors) {
-        const n = document.querySelector(sel);
-        if (n) {
-          return this._attachDomCaptions(
-            () => document.querySelector(sel),
-            sel + ' div, ' + sel + ' span, ' + sel + ' p',
-            'sous-titres détectés (' + sel + ')',
-            null
-          );
-        }
-      }
-      return false;
-    }
-
-    /* Helper mutualisé */
-    _attachDomCaptions(getContainer, innerSel, activeMsg, waitingMsg) {
-      const attach = (container) => {
-        let lastEmit = '';
-        const emit = () => {
-          const segs = container.querySelectorAll(innerSel);
-          const text = Array.from(segs).map(s => s.textContent).join(' ').replace(/\s+/g, ' ').trim();
-          if (text && text !== lastEmit) {
-            lastEmit = text;
-            this.handleCaption(text, 'auto');
-          }
-        };
-        const mo = new MutationObserver(emit);
-        mo.observe(container, { childList: true, subtree: true, characterData: true });
-        this.detachers.push(() => mo.disconnect());
-        emit();
-      };
-
-      const existing = getContainer();
-      if (existing) { attach(existing); setStatus(activeMsg); return true; }
-      if (!waitingMsg) return false;
-
-      const rootObs = new MutationObserver(() => {
-        const c = getContainer();
-        if (c) { attach(c); setStatus(activeMsg); rootObs.disconnect(); }
-      });
-      rootObs.observe(document.body, { childList: true, subtree: true });
-      this.detachers.push(() => rootObs.disconnect());
-      setStatus(waitingMsg);
-      return true;
-    }
-
-    /* Micro volontairement supprimé — capture onglet uniquement. */
-
-    async handleCaption(rawText, sourceLang) {
-      if (this.paused) return;
-      const text = rawText.replace(/\s+/g, ' ').trim();
-      if (!text || text === this.lastText) return;
-      this.lastText = text;
-
-      setOrig(text, sourceLang);
-      setTrad('…', state.langTo);
-
-      try {
-        const { translated, detected } = await apiTranslate(text, state.langFrom || 'auto', state.langTo || 'fr');
-        if (text !== this.lastText) return; // dépassé par un plus récent
-        setOrig(text, detected || sourceLang);
-        setTrad(translated || '—', state.langTo);
-        this.log.push({
-          t: new Date().toISOString().slice(11, 19),
-          ms: Date.now(),
-          src: text,
-          trad: translated || '',
-          lang: detected || sourceLang || '',
-        });
-        if (this.log.length > 500) this.log.splice(0, this.log.length - 500);
-        renderHistoryList();
-      } catch {
-        setTrad('⚠️ traduction indisponible', state.langTo);
-      }
-    }
-  }
-
-  let audioStarting = false;
-  async function startAudio() {
-    // Idempotent : si le widget tourne déjà, on ne relance pas
-    if (audioStarting) return;
-    if (widget && subtitleEngine) return;
-    audioStarting = true;
-    try {
-      await loadWidgetState();
-      buildWidget();
-      clampWidgetToViewport();
-      if (!subtitleEngine) subtitleEngine = new SubtitleEngine();
-      await subtitleEngine.start();
-      subtitleEngine.setTabGain(widgetUI.tabGain ?? 1.0);
-      window.addEventListener('resize', clampWidgetToViewport, { passive: true });
-    } catch (err) {
-      console.warn('TU: startAudio failed', err);
-      // Ne laisse PAS l'utilisateur sans widget
-      if (!widget) buildWidget();
-      setStatus('⚠️ erreur audio : ' + (err?.message || err));
-    } finally {
-      audioStarting = false;
-    }
-  }
-  function clampWidgetToViewport() {
-    if (!widget) return;
-    const r = widget.getBoundingClientRect();
-    // Si le widget est partiellement ou totalement hors écran, on le repose en bas-droite
-    const outRight  = r.left > window.innerWidth  - 20;
-    const outBottom = r.top  > window.innerHeight - 20;
-    const outLeft   = r.right < 20;
-    const outTop    = r.bottom < 20;
-    if (outRight || outBottom || outLeft || outTop) {
-      widget.style.left = 'auto';
-      widget.style.top  = 'auto';
-      widget.style.right = '24px';
-      widget.style.bottom = '24px';
-      saveWidgetState({ left: null, top: null });
-      return;
-    }
-    const maxLeft = window.innerWidth  - widget.offsetWidth  - 8;
-    const maxTop  = window.innerHeight - widget.offsetHeight - 8;
-    let changed = false;
-    if (r.left > maxLeft) { widget.style.left = Math.max(8, maxLeft) + 'px'; changed = true; }
-    if (r.top  > maxTop)  { widget.style.top  = Math.max(8, maxTop)  + 'px'; changed = true; }
-    if (changed) saveWidgetState({ left: parseInt(widget.style.left, 10), top: parseInt(widget.style.top, 10) });
-  }
-  function stopAudio() {
-    if (subtitleEngine) { subtitleEngine.stop(); subtitleEngine = null; }
-    removeEl(widget); widget = null;
-    window.removeEventListener('resize', clampWidgetToViewport);
-  }
-
-  /* =========================================================
      Apply settings
      ========================================================= */
   function applyState() {
-    if (state.audio) startAudio();
-    else stopAudio();
-
     if (state.qcm) startQcmAuto();
     else stopQcmAuto();
 
@@ -1602,17 +1306,19 @@
      Messaging
      ========================================================= */
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (!msg || !msg.type) return;
+    if (!msg || !msg.type) return false;
 
     if (msg.type === 'SETTINGS_UPDATED') {
       Object.assign(state, msg.settings || {});
       applyState();
-      return;
+      try { sendResponse({ ok: true }); } catch {}
+      return false;
     }
     if (msg.type === 'CTX_TRANSLATE_SELECTION') {
       state.selection = true;
       showTooltipForSelection();
-      return;
+      try { sendResponse({ ok: true }); } catch {}
+      return false;
     }
     if (msg.type === 'CTX_TRANSLATE_QCM' || msg.type === 'RUN_QCM') {
       translateQcm()
@@ -1620,39 +1326,15 @@
         .catch(err => { try { sendResponse({ ok: false, error: err.message }); } catch {} });
       return true; // async response
     }
-    if (msg.type === 'CTX_START_AUDIO') {
-      state.audio = true;
-      startAudio();
-      toast('Écoute audio activée');
-      return;
-    }
     if (msg.type === 'CLEAR_CACHE') {
       try { QCM_CACHE.clear(); QCM_MISS.clear(); } catch {}
       try { chrome.storage.local.remove(PERSIST_KEY); } catch {}
       toast('Cache vidé');
-      return;
+      try { sendResponse({ ok: true }); } catch {}
+      return false;
     }
 
-    if (msg.type === 'WHISPER_PROGRESS') {
-      if (!widget) return;
-      const s = msg.status || '';
-      if (s === 'download' || s === 'progress') {
-        const file = (msg.file || '').split('/').pop();
-        const pct = typeof msg.progress === 'number' ? Math.round(msg.progress) : null;
-        setStatus('📦 Whisper : ' + (file || 'chargement') + (pct != null ? ` (${pct}%)` : '…'));
-      } else if (s === 'done') {
-        setStatus('✅ modèle Whisper prêt');
-      } else if (s === 'ready') {
-        setStatus('🧠 Whisper initialisé');
-      } else if (s === 'initiate') {
-        setStatus('⏳ téléchargement modèle…');
-      }
-      return;
-    }
-    if (msg.type === 'WHISPER_READY') {
-      if (widget) setStatus('✅ Whisper prêt — transcription en direct');
-      return;
-    }
+    return false;
   });
 
   /* =========================================================
