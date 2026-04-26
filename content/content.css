@@ -150,254 +150,300 @@
   transform: translateY(-1px);
 }
 
-/* ========== QCM — GAME OF THRONES ==========
-   Parchemin charbon, or Lannister, rouge Targaryen, bordure de fer.
-   Serif majestueux. "Winter is coming." */
+/* ========== QCM — LIQUID GLASS ==========
+   Verre translucide dépoli, gradients soft, coins arrondis,
+   ombres délicates. Inspiré de la design language Apple. */
 
-/* Traduction inline d'une option : sceau or sur cuir noir */
+/* Badge inline pour traduction d'option : verre teinté violet */
 .tu-trad-inline {
   display: inline-block !important;
   margin-left: 6px !important;
-  padding: 1px 9px !important;
-  font-family: "Cinzel", "Trajan Pro", "Cormorant Garamond", "Times New Roman", Georgia, serif !important;
-  font-size: 0.9em !important;
+  padding: 2px 10px !important;
+  font-family: -apple-system, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif !important;
+  font-size: 0.88em !important;
   font-style: normal !important;
-  font-weight: 700 !important;
-  letter-spacing: 0.06em !important;
-  text-transform: uppercase !important;
-  color: #d4a946 !important; /* or vieilli */
-  background: #1a1410 !important; /* cuir noir */
-  border: 1px solid #8b6f2e !important; /* fer doré */
-  border-radius: 0 !important;
+  font-weight: 600 !important;
+  letter-spacing: 0 !important;
+  color: #ffffff !important;
+  background:
+    linear-gradient(135deg, rgba(124, 92, 255, 0.85), rgba(78, 195, 255, 0.75)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.25) !important;
+  border-radius: 999px !important; /* pilule */
   vertical-align: baseline !important;
-  text-shadow: 0 0 1px rgba(0,0,0,0.6) !important;
-  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.6) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
+  backdrop-filter: blur(8px) !important;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.15) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    0 1px 3px rgba(124, 92, 255, 0.15) !important;
   text-decoration: none !important;
   line-height: 1.4 !important;
 }
 
-/* Bloc question / phrase à trou : parchemin charbon, dragon rouge */
+/* Bloc question / phrase à trou : verre dépoli sombre */
 .tu-trad-question {
   display: block !important;
-  margin: 8px 0 !important;
-  padding: 14px 18px 14px 22px !important;
-  font-family: "Cormorant Garamond", "EB Garamond", Georgia, "Times New Roman", serif !important;
-  font-size: 1.05em !important;
+  margin: 10px 0 !important;
+  padding: 14px 18px !important;
+  font-family: -apple-system, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif !important;
+  font-size: 0.98em !important;
   font-weight: 500 !important;
   font-style: normal !important;
-  letter-spacing: 0.02em !important;
-  color: #e8d9b0 !important; /* parchemin */
+  letter-spacing: 0 !important;
+  color: #f8fafc !important;
   background:
-    /* Texture grain de pierre simulée */
-    radial-gradient(ellipse at top left, rgba(139, 0, 0, 0.06) 0%, transparent 60%),
-    radial-gradient(ellipse at bottom right, rgba(212, 169, 70, 0.04) 0%, transparent 60%),
-    #0c0a09 !important; /* charbon */
-  border: 2px solid #1a1410 !important; /* iron edge */
-  border-left: 5px solid #8b0000 !important; /* dragon-blood */
-  border-radius: 0 !important;
+    linear-gradient(135deg, rgba(30, 41, 59, 0.92), rgba(15, 23, 42, 0.95)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.10) !important;
+  border-radius: 16px !important;
   line-height: 1.55 !important;
-  text-shadow: 0 1px 0 rgba(0,0,0,0.7) !important;
+  -webkit-backdrop-filter: saturate(180%) blur(20px) !important;
+  backdrop-filter: saturate(180%) blur(20px) !important;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.2) !important;
   box-shadow:
-    inset 0 0 0 1px rgba(212, 169, 70, 0.15),
-    inset 0 0 30px rgba(0,0,0,0.4) !important; /* lueur de torche */
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 4px 16px rgba(15, 23, 42, 0.25),
+    0 1px 3px rgba(0, 0, 0, 0.15) !important;
   position: relative !important;
+  overflow: hidden !important;
+  animation: tuFadeIn 0.35s ease !important;
 }
 
-/* Petit ornement "★" House Lannister en haut à droite */
+/* Reflet "glass highlight" sur le haut du bloc */
 .tu-trad-question::before {
-  content: "✦";
-  position: absolute;
-  top: 4px;
-  right: 8px;
-  color: #8b6f2e !important;
-  font-size: 0.9em !important;
-  opacity: 0.5;
-  pointer-events: none;
+  content: "" !important;
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  height: 1px !important;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent) !important;
+  pointer-events: none !important;
 }
 
-/* Mot inséré dans la phrase à trou : sceau d'or Lannister */
+/* Mot inséré dans la phrase à trou : pilule verre ambré */
 .tu-fill-mark {
   display: inline-block !important;
   background:
-    linear-gradient(180deg, #f4d05e 0%, #d4a946 50%, #8b6f2e 100%) !important;
-  color: #1a0f08 !important;
+    linear-gradient(135deg, rgba(251, 191, 36, 0.95), rgba(245, 158, 11, 0.9)) !important;
+  color: #422006 !important;
   padding: 2px 12px !important;
-  margin: 0 4px !important;
-  font-family: "Cinzel", "Trajan Pro", Georgia, serif !important;
-  font-size: 1em !important;
+  margin: 0 3px !important;
+  font-family: inherit !important;
+  font-size: 0.96em !important;
   font-weight: 700 !important;
   font-style: normal !important;
-  letter-spacing: 0.04em !important;
-  text-transform: uppercase !important;
-  text-shadow: 0 1px 0 rgba(255, 220, 130, 0.5) !important;
-  border: 1px solid #5c4a1f !important;
-  border-radius: 0 !important;
+  letter-spacing: 0 !important;
+  border: 1px solid rgba(255, 255, 255, 0.4) !important;
+  border-radius: 999px !important;
+  text-shadow: 0 1px 0 rgba(255, 224, 153, 0.5) !important;
+  -webkit-backdrop-filter: blur(4px) !important;
+  backdrop-filter: blur(4px) !important;
   box-shadow:
-    inset 0 1px 0 rgba(255, 240, 180, 0.6),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.4),
-    0 1px 2px rgba(0,0,0,0.5) !important;
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    0 1px 4px rgba(245, 158, 11, 0.3) !important;
 }
 .tu-fill-mark.tu-fill-empty {
-  background: #2a201a !important;
-  color: #6b5638 !important;
-  border: 1px dashed #5c4a1f !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: rgba(255, 255, 255, 0.5) !important;
+  border: 1px dashed rgba(255, 255, 255, 0.25) !important;
   text-shadow: none !important;
   box-shadow: none !important;
 }
 
-/* Outils (TTS, bookmark) — boutons de cuir avec rivets dorés */
+/* Outils (TTS, bookmark) : pilules verre */
 .tu-fill-tools {
   display: flex !important;
-  gap: 6px !important;
+  gap: 8px !important;
   margin-top: 12px !important;
-  padding-top: 10px !important;
-  border-top: 1px solid #3a2e1a !important; /* fil d'or fin */
+  padding-top: 12px !important;
+  border-top: 1px solid rgba(255, 255, 255, 0.10) !important;
 }
 .tu-fill-tool {
-  background: #1a1410 !important;
-  color: #d4a946 !important;
-  border: 1px solid #5c4a1f !important;
-  border-radius: 0 !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #f1f5f9 !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  border-radius: 999px !important;
   padding: 5px 14px !important;
-  font-family: "Cinzel", "Trajan Pro", Georgia, serif !important;
+  font-family: inherit !important;
   font-size: 0.85em !important;
   font-weight: 600 !important;
-  letter-spacing: 0.06em !important;
-  text-transform: uppercase !important;
+  letter-spacing: 0 !important;
   line-height: 1.4 !important;
   cursor: pointer !important;
-  text-shadow: 0 1px 0 rgba(0,0,0,0.7) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
+  backdrop-filter: blur(8px) !important;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.15) !important;
   box-shadow:
-    inset 0 1px 0 rgba(212, 169, 70, 0.15),
-    inset 0 -1px 0 rgba(0,0,0,0.5) !important;
-  transition: all 120ms ease !important;
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    0 1px 2px rgba(0, 0, 0, 0.1) !important;
+  transition: all 180ms ease !important;
 }
 .tu-fill-tool:hover {
-  background: #8b0000 !important; /* rouge dragon au hover */
-  color: #f4d05e !important;
-  border-color: #8b6f2e !important;
+  background: rgba(124, 92, 255, 0.35) !important;
+  border-color: rgba(124, 92, 255, 0.5) !important;
+  transform: translateY(-1px) !important;
   box-shadow:
-    inset 0 1px 0 rgba(244, 208, 94, 0.25),
-    0 0 8px rgba(139, 0, 0, 0.4) !important;
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    0 4px 10px rgba(124, 92, 255, 0.25) !important;
 }
 .tu-fill-bookmark.is-active {
-  background: linear-gradient(180deg, #f4d05e 0%, #d4a946 100%) !important;
-  color: #1a0f08 !important;
-  border-color: #5c4a1f !important;
-  text-shadow: 0 1px 0 rgba(255, 240, 180, 0.5) !important;
+  background:
+    linear-gradient(135deg, rgba(251, 191, 36, 0.85), rgba(245, 158, 11, 0.7)) !important;
+  color: #422006 !important;
+  border-color: rgba(255, 255, 255, 0.3) !important;
+  text-shadow: 0 1px 0 rgba(255, 224, 153, 0.5) !important;
 }
 
-/* ========== Bande "Réponse probable" (analyseur grammatical) ==========
-   Sceau royal en haut du bloc QCM. Or martelé, latin, parchemin.
-   Couleur du badge confiance = vert (élevé), or (moyen), bronze (bas). */
+/* ========== Bande "Réponse probable" (analyseur) — Liquid Glass ==========
+   Verre translucide violet/cyan, badge confiance pilule, bouton aurora. */
 .tu-fill-suggest {
   display: flex !important;
   align-items: center !important;
   flex-wrap: wrap !important;
-  gap: 8px !important;
+  gap: 10px !important;
   margin: 0 0 12px 0 !important;
-  padding: 8px 14px !important;
+  padding: 10px 16px !important;
   background:
-    linear-gradient(180deg, #2a1a08 0%, #1a0f05 100%) !important;
-  border: 1px solid #8b6f2e !important;
-  border-radius: 0 !important;
-  font-family: "Cinzel", "Trajan Pro", "Cormorant Garamond", Georgia, serif !important;
+    linear-gradient(135deg, rgba(124, 92, 255, 0.18), rgba(78, 195, 255, 0.10)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  border-radius: 14px !important;
+  font-family: -apple-system, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif !important;
   font-size: 0.92em !important;
-  letter-spacing: 0.04em !important;
-  color: #e8d9b0 !important;
-  text-shadow: 0 1px 0 rgba(0,0,0,0.7) !important;
+  letter-spacing: 0 !important;
+  color: #f1f5f9 !important;
+  -webkit-backdrop-filter: saturate(180%) blur(20px) !important;
+  backdrop-filter: saturate(180%) blur(20px) !important;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.15) !important;
   box-shadow:
-    inset 0 1px 0 rgba(212, 169, 70, 0.2),
-    inset 0 -1px 0 rgba(0,0,0,0.5),
-    0 0 8px rgba(212, 169, 70, 0.08) !important;
-  animation: none !important;
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 4px 16px rgba(124, 92, 255, 0.12) !important;
+  animation: tuFadeIn 0.3s ease !important;
+  position: relative !important;
+  overflow: hidden !important;
+}
+.tu-fill-suggest::before {
+  content: "" !important;
+  position: absolute !important;
+  top: 0; left: 0; right: 0;
+  height: 1px !important;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent) !important;
+  pointer-events: none !important;
 }
 .tu-fill-suggest.is-chosen {
-  border-color: #d4a946 !important;
+  background:
+    linear-gradient(135deg, rgba(52, 211, 153, 0.22), rgba(78, 195, 255, 0.12)) !important;
+  border-color: rgba(127, 217, 156, 0.4) !important;
   box-shadow:
-    inset 0 1px 0 rgba(244, 208, 94, 0.4),
-    inset 0 -1px 0 rgba(0,0,0,0.5),
-    0 0 12px rgba(212, 169, 70, 0.25) !important;
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 4px 16px rgba(52, 211, 153, 0.18) !important;
 }
 
 .tu-suggest-icon {
-  font-size: 1.3em !important;
-  color: #f4d05e !important;
-  text-shadow: 0 0 6px rgba(244, 208, 94, 0.6) !important;
+  font-size: 1.15em !important;
   line-height: 1 !important;
+  filter: drop-shadow(0 0 6px rgba(124, 92, 255, 0.6)) !important;
 }
 .tu-suggest-label {
-  font-weight: 700 !important;
-  text-transform: uppercase !important;
-  font-size: 0.78em !important;
-  color: #d4a946 !important;
-  letter-spacing: 0.12em !important;
+  font-weight: 600 !important;
+  text-transform: none !important;
+  font-size: 0.82em !important;
+  color: rgba(255, 255, 255, 0.7) !important;
+  letter-spacing: 0.02em !important;
 }
 .tu-suggest-word {
   font-weight: 700 !important;
-  font-size: 1.05em !important;
-  color: #f4d05e !important;
-  background: rgba(212, 169, 70, 0.12) !important;
-  padding: 1px 8px !important;
-  border: 1px solid #5c4a1f !important;
+  font-size: 1em !important;
+  color: #ffffff !important;
+  background: rgba(255, 255, 255, 0.12) !important;
+  padding: 2px 10px !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  border-radius: 999px !important;
   text-transform: lowercase !important;
 }
 .tu-suggest-arrow {
-  color: #8b6f2e !important;
-  font-weight: 700 !important;
+  color: rgba(255, 255, 255, 0.4) !important;
+  font-weight: 600 !important;
 }
 .tu-suggest-trans {
   font-style: italic !important;
-  color: #c9b58e !important;
+  color: rgba(241, 245, 249, 0.85) !important;
   font-size: 0.95em !important;
 }
+/* Badge confiance — pilule pleine, couleur distincte par niveau.
+   Fond opaque + ombre colorée → contraste fort sur le verre violet/cyan. */
 .tu-suggest-conf {
   margin-left: auto !important;
-  padding: 2px 9px !important;
+  padding: 3px 12px !important;
   font-weight: 700 !important;
-  font-size: 0.8em !important;
-  font-family: "Cinzel", Georgia, serif !important;
-  letter-spacing: 0.05em !important;
-  border: 1px solid currentColor !important;
-  background: rgba(0,0,0,0.4) !important;
+  font-size: 0.82em !important;
+  font-family: inherit !important;
+  letter-spacing: 0.03em !important;
+  border-radius: 999px !important;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.25) !important;
+  border: 1px solid rgba(255, 255, 255, 0.35) !important;
+  -webkit-backdrop-filter: blur(6px) !important;
+  backdrop-filter: blur(6px) !important;
 }
-.tu-conf-high .tu-suggest-conf { color: #7fd99c !important; } /* vert dragon */
-.tu-conf-mid  .tu-suggest-conf { color: #f4d05e !important; } /* or */
-.tu-conf-low  .tu-suggest-conf { color: #d49d6e !important; } /* bronze */
+/* HIGH = vert émeraude (≥80% — très probable) */
+.tu-conf-high .tu-suggest-conf {
+  color: #ffffff !important;
+  background: linear-gradient(135deg, #10b981, #059669) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 2px 8px rgba(16, 185, 129, 0.45) !important;
+}
+/* MID = ambre/orange (60-79% — probable) */
+.tu-conf-mid .tu-suggest-conf {
+  color: #422006 !important;
+  background: linear-gradient(135deg, #fbbf24, #f59e0b) !important;
+  text-shadow: 0 1px 0 rgba(255, 224, 153, 0.6) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    0 2px 8px rgba(245, 158, 11, 0.45) !important;
+}
+/* LOW = rouge corail (<60% — incertain, prudence) */
+.tu-conf-low .tu-suggest-conf {
+  color: #ffffff !important;
+  background: linear-gradient(135deg, #ef4444, #dc2626) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 2px 8px rgba(239, 68, 68, 0.45) !important;
+}
 
 .tu-suggest-apply {
-  background: linear-gradient(180deg, #4a0a0a 0%, #2a0505 100%) !important;
-  color: #f4d05e !important;
-  border: 1px solid #8b6f2e !important;
-  border-radius: 0 !important;
-  padding: 4px 14px !important;
-  font-family: "Cinzel", "Trajan Pro", Georgia, serif !important;
-  font-size: 0.82em !important;
+  background:
+    linear-gradient(135deg, rgba(124, 92, 255, 0.95), rgba(78, 195, 255, 0.85)) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.25) !important;
+  border-radius: 999px !important;
+  padding: 5px 14px !important;
+  font-family: inherit !important;
+  font-size: 0.85em !important;
   font-weight: 700 !important;
-  letter-spacing: 0.08em !important;
-  text-transform: uppercase !important;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
   cursor: pointer !important;
-  text-shadow: 0 1px 0 rgba(0,0,0,0.7) !important;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.15) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
+  backdrop-filter: blur(8px) !important;
   box-shadow:
-    inset 0 1px 0 rgba(244, 208, 94, 0.2),
-    inset 0 -1px 0 rgba(0,0,0,0.6) !important;
-  transition: all 120ms ease !important;
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    0 2px 8px rgba(124, 92, 255, 0.3) !important;
+  transition: all 180ms ease !important;
 }
 .tu-suggest-apply:hover {
-  background: linear-gradient(180deg, #8b0000 0%, #4a0a0a 100%) !important;
-  color: #ffe5a0 !important;
-  border-color: #d4a946 !important;
+  transform: translateY(-1px) !important;
   box-shadow:
-    inset 0 1px 0 rgba(244, 208, 94, 0.3),
-    0 0 10px rgba(139, 0, 0, 0.5) !important;
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 6px 16px rgba(124, 92, 255, 0.45) !important;
 }
 .tu-suggest-applied {
   margin-left: auto !important;
-  color: #7fd99c !important; /* vert validation */
-  font-size: 1.1em !important;
+  color: #6ee7b7 !important;
+  font-size: 1.15em !important;
   font-weight: 700 !important;
-  padding: 0 6px !important;
-  text-shadow: 0 0 6px rgba(127, 217, 156, 0.5) !important;
+  padding: 0 8px !important;
+  filter: drop-shadow(0 0 6px rgba(110, 231, 183, 0.5)) !important;
 }
 
 @keyframes tuFadeIn {
