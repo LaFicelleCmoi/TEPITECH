@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Traducteur Universel — Side Panel</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+
+  <header class="sp-head">
+    <div class="sp-brand">
+      <span class="sp-logo">🌐</span>
+      <strong>Traducteur Universel</strong>
+    </div>
+    <span class="sp-domain" id="spDomain">—</span>
+  </header>
+
+  <!-- Section : Traduction rapide -->
+  <section class="sp-card">
+    <div class="sp-card-head">
+      <h3>✍️ Traduction rapide</h3>
+    </div>
+
+    <div class="sp-langs">
+      <select id="spLangFrom" aria-label="Langue source">
+        <option value="auto">🌍 Auto</option>
+        <option value="en">🇺🇸 Anglais</option>
+        <option value="fr">🇫🇷 Français</option>
+        <option value="es">🇪🇸 Espagnol</option>
+        <option value="de">🇩🇪 Allemand</option>
+        <option value="it">🇮🇹 Italien</option>
+        <option value="ja">🇯🇵 Japonais</option>
+        <option value="zh">🇨🇳 Chinois</option>
+        <option value="ru">🇷🇺 Russe</option>
+        <option value="ar">🇸🇦 Arabe</option>
+        <option value="pt">🇵🇹 Portugais</option>
+        <option value="ko">🇰🇷 Coréen</option>
+      </select>
+      <button class="sp-swap" id="spSwap" title="Inverser">⇄</button>
+      <select id="spLangTo" aria-label="Langue cible">
+        <option value="fr">🇫🇷 Français</option>
+        <option value="en">🇺🇸 Anglais</option>
+        <option value="es">🇪🇸 Espagnol</option>
+        <option value="de">🇩🇪 Allemand</option>
+        <option value="it">🇮🇹 Italien</option>
+        <option value="ja">🇯🇵 Japonais</option>
+        <option value="zh">🇨🇳 Chinois</option>
+        <option value="ru">🇷🇺 Russe</option>
+        <option value="ar">🇸🇦 Arabe</option>
+        <option value="pt">🇵🇹 Portugais</option>
+        <option value="ko">🇰🇷 Coréen</option>
+      </select>
+    </div>
+
+    <div class="sp-input-wrap">
+      <textarea id="spSrc" placeholder="Tapez, collez ou dictez du texte à traduire…"></textarea>
+      <div class="sp-input-tools">
+        <button id="spPaste" class="sp-icon-btn" title="Coller depuis le presse-papier">📋</button>
+        <button id="spMic"   class="sp-icon-btn" title="Saisie vocale (Web Speech API)">🎙️</button>
+      </div>
+    </div>
+
+    <div class="sp-result" id="spResult">—</div>
+
+    <div class="sp-actions">
+      <button id="spTranslate" class="sp-btn sp-primary">Traduire</button>
+      <button id="spSpeak"     class="sp-btn" title="Écouter la traduction">🔊</button>
+      <button id="spCopy"      class="sp-btn" title="Copier la traduction">📋</button>
+      <button id="spClear"     class="sp-btn" title="Vider">🗑️</button>
+    </div>
+  </section>
+
+  <!-- Section : Sélection sur la page -->
+  <section class="sp-card">
+    <div class="sp-card-head">
+      <h3>📥 Sélection sur la page</h3>
+    </div>
+    <button id="spGetSelection" class="sp-btn sp-full">📋 Capturer + traduire la sélection</button>
+    <p class="sp-muted sp-small">
+      Ou clic-droit sur la page → <b>📑 Traduire dans le side panel</b>
+    </p>
+  </section>
+
+  <!-- Section : Audio Live Caption -->
+  <section class="sp-card sp-live-caption">
+    <div class="sp-card-head">
+      <h3>🎧 Audio en direct</h3>
+      <span id="spBrowserBadge" class="sp-muted sp-small"></span>
+    </div>
+    <p class="sp-small">
+      Pour transcrire l'audio anglais d'un test (Tepitech, TOEIC…), ton
+      navigateur intègre les <b>Sous-titres instantanés</b> :
+    </p>
+    <ol class="sp-steps">
+      <li>Ouvre <code id="spLcUrl">chrome://settings/accessibility</code></li>
+      <li>Active <b>Sous-titres instantanés</b> (Live Caption)</li>
+      <li>Lance ton audio → la bulle s'affiche en bas de l'écran</li>
+    </ol>
+    <details class="sp-small" style="margin: 6px 0 8px">
+      <summary class="sp-muted" style="cursor:pointer">Autres navigateurs</summary>
+      <ul style="margin:6px 0 0 0;padding-left:18px;font-size:11.5px">
+        <li>🟢 Chrome : <code>chrome://settings/accessibility</code></li>
+        <li>🦁 Brave : <code>brave://settings/accessibility</code> (active aussi <code>brave://flags</code> → Live Caption si l'option n'apparaît pas)</li>
+        <li>🔵 Edge : <code>edge://settings/accessibility</code></li>
+        <li>🔴 Opera : <code>opera://settings/accessibility</code></li>
+      </ul>
+    </details>
+    <button id="spCopyAccess" class="sp-btn sp-full">📋 Copier l'adresse des réglages</button>
+  </section>
+
+  <!-- Section : Historique de session -->
+  <section class="sp-card">
+    <div class="sp-card-head">
+      <h3>📜 Historique (session)</h3>
+      <div style="display:flex;gap:4px">
+        <button id="spExportHist"  class="sp-btn sp-ghost" title="Exporter en CSV">📥</button>
+        <button id="spExportAnki"  class="sp-btn sp-ghost" title="Exporter pour Anki (TSV)">🃏</button>
+        <button id="spClearHist"   class="sp-btn sp-ghost" title="Vider l'historique">🗑️</button>
+      </div>
+    </div>
+    <input type="search" id="spHistSearch" class="sp-search" placeholder="Rechercher dans l'historique…" />
+    <div id="spHistory" class="sp-history">
+      <p class="sp-muted sp-small">Aucune traduction encore.</p>
+    </div>
+  </section>
+
+  <footer class="sp-foot">
+    <span class="sp-muted sp-small">Side panel · v1.0.0</span>
+  </footer>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>
